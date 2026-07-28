@@ -10,11 +10,11 @@ import torch.utils.data
 
 from pipeline import data
 from pipeline import logger
-from pipeline.discriminators import SimplePhysicsDiscriminator, CaloganPhysicsDiscriminator
+from pipeline.discriminators import  CaloganPhysicsDiscriminator3D
 from pipeline.evaluation import evaluate_model
 from pipeline.experiment_setup import experiments_storage, global_config, init_logger
 from pipeline.gan import GAN
-from pipeline.generators import SimplePhysicsGenerator, CaloganPhysicsGenerator
+from pipeline.generators import CaloganPhysicsGenerator3D
 from pipeline.metrics import *
 from pipeline.config import load_global_config
 from pipeline.custom_metrics import *
@@ -25,7 +25,7 @@ from pipeline.regularizer import *
 from pipeline.results_storage import ResultsStorage
 from pipeline.storage import ExperimentsStorage
 from pipeline.train import Stepper, WganEpochTrainer, GanTrainer
-from pipeline.comet_logger import CometCM
+from pipeline.wandb_logger import WandbCM
 
 
 def form_metric() -> Metric:
@@ -82,10 +82,10 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
     noise_dimension = 50
 
     def uniform_noise_generator(n: int) -> torch.Tensor:
-        return 2*torch.rand(size=(n, noise_dimension)) - 1  # [-1, 1]
+        return 2*torch.rand(size=(n, noise_dimension)) - 1  # шум с распределением [-1, 1] 
 
-    generator = CaloganPhysicsGenerator(noise_dim=noise_dimension)
-    discriminator = CaloganPhysicsDiscriminator()
+    generator = CaloganPhysicsGenerator3D(noise_dim=noise_dimension)
+    discriminator =  CaloganPhysicsDiscriminator3D()
     discriminator = apply_normalization(discriminator, SpectralNormalizer)
     # discriminator = apply_normalization(discriminator, MultiplyOutputNormalizer, coef=2., is_trainable_coef=False)
     # discriminator = apply_normalization(discriminator, WeakSpectralNormalizer, beta=2., is_trainable_beta=False)
@@ -101,7 +101,6 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
     if gan_model is None:
         gan_model = GAN(generator, discriminator, uniform_noise_generator)
 
-    # В общем случае Stepper - это scheduler + optimizer, здесь у нас нет schesuler
     generator_stepper = Stepper(
         optimizer=torch.optim.RMSprop(generator.parameters(), lr=1e-4)
     )
@@ -124,11 +123,10 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
                                         logger_cm_fn=logger_cm_fn,
                                         regularizer=regularizer)
     return train_gan_generator, epoch_trainer
-    # train_gan_generator — объект, который запускает обучение по эпохам.
-    # epoch_trainer — объект, который непосредственно знает, как обучать WGAN в течение одной эпохи и хранит историю loss.
+
 
 def run() -> GAN:
-    model_name = 'physics_test'
+    model_name = 'physics_test_3d'
     gan_trainer, epoch_trainer = form_gan_trainer(model_name=model_name, n_epochs=30)
     gan = None
     for epoch, gan in gan_trainer:
