@@ -1,6 +1,6 @@
 from abc import abstractmethod
 from typing import Tuple, Any
-
+from torch.nn.utils import spectral_norm
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -87,7 +87,6 @@ class CaloganPhysicsDiscriminator(Discriminator):
 
 
 ## класс с 3d сверткой
-
 class CaloganPhysicsDiscriminator3D(Discriminator):
 
     def __init__(
@@ -98,65 +97,134 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
         super().__init__()
 
         self.activation = act_func
-        self.add_points_norms_and_angles = add_points_norms_and_angles
-
-    
-        # (B, 1, 7, 7, 5)
-
-        self.conv1 = nn.Conv3d(
-            in_channels=1,
-            out_channels=32,
-            kernel_size=3,
-            stride=1,
-            padding=1,
+        self.add_points_norms_and_angles = (
+            add_points_norms_and_angles
         )
-        # (B, 1, 7, 7, 5)
-       
-        # (B, 32, 7, 7, 5)
 
-        self.conv2 = nn.Conv3d(
-            in_channels=32,
-            out_channels=64,
-            kernel_size=3,
-            stride=(1,2,2),
-            padding=1,
+        # Вход:
+        # (B, 1, 10, 7, 9)
+        #
+        # C = 1
+        # D = 10
+        # H = 7
+        # W = 9
+
+        # -----------------------------------------
+        # Conv 1
+        #
+        # (B, 1, 10, 7, 9)
+        # ->
+        # (B, 32, 10, 7, 9)
+        # -----------------------------------------
+
+        self.conv1 = spectral_norm(
+            nn.Conv3d(
+                in_channels=1,
+                out_channels=32,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+            )
         )
-       
-        # (B, 64, 7, 4, 3)
 
-        self.conv3 = nn.Conv3d(
-            in_channels=64,
-            out_channels=128,
-            kernel_size=3,
-            stride=1,
-            padding=1,
+        # -----------------------------------------
+        # Conv 2
+        #
+        # depth НЕ уменьшаем
+        #
+        # (B, 32, 10, 7, 9)
+        # ->
+        # (B, 64, 10, 4, 5)
+        # -----------------------------------------
+
+        self.conv2 = spectral_norm(
+            nn.Conv3d(
+                in_channels=32,
+                out_channels=64,
+                kernel_size=3,
+                stride=(1, 2, 2),
+                padding=1,
+            )
         )
-     
-        # (B, 128, 7, 4, 3)
 
-        self.conv4 = nn.Conv3d(
-            in_channels=128,
-            out_channels=256,
-            kernel_size=3,
-            stride=1,
-            padding=1,
+        # -----------------------------------------
+        # Conv 3
+        #
+        # (B, 64, 10, 4, 5)
+        # ->
+        # (B, 128, 10, 4, 5)
+        # -----------------------------------------
+
+        self.conv3 = spectral_norm(
+            nn.Conv3d(
+                in_channels=64,
+                out_channels=128,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+            )
         )
-        # (B, 256, 7, 4, 3)
 
-        # Сжимает весь трёхмерный объём до одного числа
-        # в каждом из 256 каналов.
-        self.adaptive_pool = nn.AdaptiveAvgPool3d((1, 1, 1))
+        # -----------------------------------------
+        # Conv 4
+        #
+        # (B, 128, 10, 4, 5)
+        # ->
+        # (B, 256, 10, 4, 5)
+        # -----------------------------------------
+
+        self.conv4 = spectral_norm(
+            nn.Conv3d(
+                in_channels=128,
+                out_channels=256,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+            )
+        )
+
+        # -----------------------------------------
+        # Global pooling
+        #
+        # (B, 256, 10, 4, 5)
+        # ->
+        # (B, 256, 1, 1, 1)
+        # -----------------------------------------
+
+        self.adaptive_pool = nn.AdaptiveAvgPool3d(
+            (1, 1, 1)
+        )
 
         condition_dim = (
-            7 if add_points_norms_and_angles else 5
+            7
+            if add_points_norms_and_angles
+            else 5
         )
 
-        self.fc1 = nn.Linear(
-            256 + condition_dim,
-            64,
+        # -----------------------------------------
+        # Fully connected part
+        # -----------------------------------------
+
+        self.fc1 = spectral_norm(
+            nn.Linear(
+                256 + condition_dim,
+                64,
+            )
         )
-        self.fc2 = nn.Linear(64, 32)
-        self.fc3 = nn.Linear(32, 1)
+
+        self.fc2 = spectral_norm(
+            nn.Linear(
+                64,
+                32,
+            )
+        )
+
+        self.fc3 = spectral_norm(
+            nn.Linear(
+                32,
+                1,
+            )
+        )
 
     def forward(
         self,
@@ -169,58 +237,84 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
         if self.add_points_norms_and_angles:
             point = aux.add_angle_and_norm(point)
 
-        # Генератор и датасет возвращают:
-        # (B, 7, 7, 5)
+        # Датасет и генератор:
+        # (B, 10, 7, 9)
         #
-        # Conv3d ожидает:
-        # (B, channels, depth, height, width)
+        # Conv3d:
+        # (B, C, D, H, W)
         #
-        # Поэтому добавляем один канал:
-        # (B, 7, 7, 5) → (B, 1, 7, 7, 5)
+        # Поэтому:
+        # (B, 10, 7, 9)
+        # ->
+        # (B, 1, 10, 7, 9)
 
         if EnergyDeposit.ndim == 4:
+
+            if tuple(EnergyDeposit.shape[1:]) != (10, 7, 9):
+                raise ValueError(
+                    "Ожидалась геометрия "
+                    "(batch, 10, 7, 9), "
+                    f"получена {tuple(EnergyDeposit.shape)}"
+                )
+
             X = EnergyDeposit.unsqueeze(1)
 
         elif EnergyDeposit.ndim == 5:
+
+            if tuple(EnergyDeposit.shape[1:]) != (1, 10, 7, 9):
+                raise ValueError(
+                    "Ожидалась геометрия "
+                    "(batch, 1, 10, 7, 9), "
+                    f"получена {tuple(EnergyDeposit.shape)}"
+                )
+
             X = EnergyDeposit
 
         else:
             raise ValueError(
-                'Ожидалась форма EnergyDeposit '
-                '(batch, 7, 7, 5) или '
-                '(batch, 1, 7, 7, 5), '
-                f'но получена {tuple(EnergyDeposit.shape)}'
+                "Ожидалась форма "
+                "(batch, 10, 7, 9) "
+                "или "
+                "(batch, 1, 10, 7, 9), "
+                f"получена {tuple(EnergyDeposit.shape)}"
             )
 
-        X = self.activation(
+        X = F.leaky_relu(
             self.conv1(X),
             negative_slope=0.2,
         )
 
-        X = self.activation(
+        X = F.leaky_relu(
             self.conv2(X),
             negative_slope=0.2,
         )
 
-        X = self.activation(
+        X = F.leaky_relu(
             self.conv3(X),
             negative_slope=0.2,
         )
 
-        X = self.activation(
+        X = F.leaky_relu(
             self.conv4(X),
             negative_slope=0.2,
         )
 
-     
+        # (B, 256, 10, 4, 5)
+        # ->
+        # (B, 256, 1, 1, 1)
+
         X = self.adaptive_pool(X)
+
+        # ->
+        # (B, 256)
+
         X = X.flatten(start_dim=1)
 
         condition = torch.cat(
             [momentum, point],
             dim=1,
         )
-        
+
         X = torch.cat(
             [X, condition],
             dim=1,
@@ -235,4 +329,5 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
             self.fc2(X),
             negative_slope=0.2,
         )
+
         return self.fc3(X)

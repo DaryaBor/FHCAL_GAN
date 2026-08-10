@@ -108,10 +108,10 @@ class WganEpochTrainer(GanEpochTrainer):
         self,
         n_critic: int = 5,
         batch_size: int = 64,
-        lambda_energy: float = 0.002,
-        lambda_sparsity: float = 0.005,
-        lambda_layer_fraction: float = 0.1,
-        lambda_quantile: float = 0.005,
+        lambda_energy: float = 0.005,
+        lambda_sparsity: float = 0.0,
+        lambda_layer_fraction: float = 5.0,
+        lambda_quantile: float = 0.02,
         debug_every: int = 50,
     ) -> None:
         self.n_critic = n_critic

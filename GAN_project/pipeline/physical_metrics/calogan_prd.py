@@ -15,87 +15,386 @@ from .prd_score import compute_prd_from_embedding
 
 class Regressor(nn.Module):
     def __init__(self):
-        super(Regressor, self).__init__()
+        super().__init__()
 
-        self.batchnorm0 = nn.BatchNorm2d(7)
+        # Вход после unsqueeze:
+        # (B, 1, 10, 7, 9)
+        #
+        # 1  - канал
+        # 10 - продольные слои (depth)
+        # 7  - height
+        # 9  - width
 
-        self.conv1 = nn.Conv2d(7, 16, 3, stride=2, padding=1)
-        self.batchnorm1 = nn.BatchNorm2d(16)
+        self.batchnorm0 = nn.BatchNorm3d(1)
 
-        self.conv2 = nn.Conv2d(16, 32, 3, stride=2, padding=1)
-        self.batchnorm2 = nn.BatchNorm2d(32)
+        # -------------------------------------------------
+        # 3D convolution block 1
+        # (B, 1, 10, 7, 9)
+        # ->
+        # (B, 16, 10, 4, 5)
+        # -------------------------------------------------
 
-        self.conv3 = nn.Conv2d(32, 64, 3, stride=2, padding=1)
-        self.batchnorm3 = nn.BatchNorm2d(64)
+        self.conv1 = nn.Conv3d(
+            in_channels=1,
+            out_channels=16,
+            kernel_size=3,
+            stride=(1, 2, 2),
+            padding=1
+        )
 
-        self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.batchnorm1 = nn.BatchNorm3d(16)
+
+        # -------------------------------------------------
+        # 3D convolution block 2
+        # (B, 16, 10, 4, 5)
+        # ->
+        # (B, 32, 10, 2, 3)
+        # -------------------------------------------------
+
+        self.conv2 = nn.Conv3d(
+            in_channels=16,
+            out_channels=32,
+            kernel_size=3,
+            stride=(1, 2, 2),
+            padding=1
+        )
+
+        self.batchnorm2 = nn.BatchNorm3d(32)
+
+        # -------------------------------------------------
+        # 3D convolution block 3
+        #
+        # depth всё ещё сохраняем
+        #
+        # (B, 32, 10, 2, 3)
+        # ->
+        # (B, 64, 10, 2, 3)
+        # -------------------------------------------------
+
+        self.conv3 = nn.Conv3d(
+            in_channels=32,
+            out_channels=64,
+            kernel_size=3,
+            stride=1,
+            padding=1
+        )
+
+        self.batchnorm3 = nn.BatchNorm3d(64)
+
+        # -------------------------------------------------
+        # Усредняем только H и W.
+        #
+        # Продольную структуру из 10 слоёв сохраняем.
+        #
+        # (B, 64, 10, 2, 3)
+        # ->
+        # (B, 64, 10, 1, 1)
+        # -------------------------------------------------
+
+        self.adaptive_pool = nn.AdaptiveAvgPool3d(
+            (10, 1, 1)
+        )
+
         self.dropout = nn.Dropout(p=0.1)
 
-        self.fc1 = nn.Linear(64, 256)
+        # После flatten:
+        #
+        # 64 * 10 = 640
+        #
+        # (B, 64, 10, 1, 1)
+        # ->
+        # (B, 640)
+
+        self.fc1 = nn.Linear(
+            64 * 10,
+            256
+        )
+
         self.batchnorm4 = nn.BatchNorm1d(256)
 
-        self.fc2 = nn.Linear(256, 128)
-        self.fc3 = nn.Linear(128, 64)
+        self.fc2 = nn.Linear(
+            256,
+            128
+        )
 
-        self.fc4 = nn.Linear(64, 5)  # x, y, px, py, pz
-        self.fc5 = nn.Linear(64, 1)  # total energy
-        self.fc6 = nn.Linear(64, 7)  # layer fractions
+        self.fc3 = nn.Linear(
+            128,
+            64
+        )
+
+        # -------------------------------------------------
+        # Выходные головы
+        # -------------------------------------------------
+
+        # x, y, px, py, pz
+        self.fc4 = nn.Linear(
+            64,
+            5
+        )
+
+        # полная энергия
+        self.fc5 = nn.Linear(
+            64,
+            1
+        )
+
+        # доли энергии по 10 продольным слоям
+        self.fc6 = nn.Linear(
+            64,
+            10
+        )
 
     def _encode_base(self, x):
+
+        # На вход приходит:
+        # (B, 10, 7, 9)
+
+        if x.ndim != 4:
+            raise ValueError(
+                "Regressor ожидает вход "
+                "(B, 10, 7, 9), "
+                f"получена форма {tuple(x.shape)}"
+            )
+
+        if tuple(x.shape[1:]) != (10, 7, 9):
+            raise ValueError(
+                "Regressor ожидает геометрию "
+                "(10, 7, 9), "
+                f"получена {tuple(x.shape[1:])}"
+            )
+
+        # Добавляем channel dimension:
+        #
+        # (B, 10, 7, 9)
+        # ->
+        # (B, 1, 10, 7, 9)
+
+        x = x.unsqueeze(1)
+
         x = self.batchnorm0(x)
 
-        x = self.batchnorm1(F.relu(self.conv1(x)))
-        x = self.batchnorm2(F.relu(self.conv2(x)))
-        x = self.batchnorm3(F.relu(self.conv3(x)))
+        # ---------------------------------------------
+        # Conv block 1
+        # ---------------------------------------------
+
+        x = self.conv1(x)
+        x = self.batchnorm1(x)
+        x = F.relu(x)
+
+        # ---------------------------------------------
+        # Conv block 2
+        # ---------------------------------------------
+
+        x = self.conv2(x)
+        x = self.batchnorm2(x)
+        x = F.relu(x)
+
+        # ---------------------------------------------
+        # Conv block 3
+        # ---------------------------------------------
+
+        x = self.conv3(x)
+        x = self.batchnorm3(x)
+        x = F.relu(x)
+
+        # ---------------------------------------------
+        # Pooling
+        # ---------------------------------------------
 
         x = self.adaptive_pool(x)
-        x = x.view(len(x), -1)
+
+        # (B, 64, 10, 1, 1)
+        # ->
+        # (B, 640)
+
+        x = torch.flatten(
+            x,
+            start_dim=1
+        )
 
         x = self.dropout(x)
-        x = self.batchnorm4(F.relu(self.fc1(x)))
-        x = F.leaky_relu(self.fc2(x))
-        x = torch.tanh(self.fc3(x))
+
+        # ---------------------------------------------
+        # Fully connected embedding
+        # ---------------------------------------------
+
+        x = self.fc1(x)
+        x = self.batchnorm4(x)
+        x = F.relu(x)
+
+        x = F.leaky_relu(
+            self.fc2(x)
+        )
+
+        # Итоговый embedding:
+        # (B, 64)
+
+        x = torch.tanh(
+            self.fc3(x)
+        )
 
         return x
 
     def forward(self, x):
+
         encoding = self._encode_base(x)
 
-        pred_condition = self.fc4(encoding)
-        pred_energy = self.fc5(encoding)
-        pred_layer_frac = F.softmax(self.fc6(encoding), dim=1)
+        # x, y, px, py, pz
+        pred_condition = self.fc4(
+            encoding
+        )
 
-        return pred_condition, pred_energy, pred_layer_frac
+        # полная энергия
+        pred_energy = self.fc5(
+            encoding
+        )
+
+        # 10 долей энергии.
+        # Сумма по слоям = 1
+        pred_layer_frac = F.softmax(
+            self.fc6(encoding),
+            dim=1
+        )
+
+        return (
+            pred_condition,
+            pred_energy,
+            pred_layer_frac
+        )
 
     def get_encoding(self, x):
+
         return self._encode_base(x)
 
-
 def load_embedder(state_path: str):
+
     embedder = Regressor()
+
     try:
-        checkpoint = torch.load(state_path, map_location='cpu', weights_only=False)
-        if isinstance(checkpoint, dict) and 'model_state' in checkpoint:
-            embedder.load_state_dict(checkpoint['model_state'])
+        checkpoint = torch.load(
+            state_path,
+            map_location='cpu',
+            weights_only=False
+        )
+
+        if (
+            isinstance(checkpoint, dict)
+            and 'model_state' in checkpoint
+        ):
+            embedder.load_state_dict(
+                checkpoint['model_state']
+            )
+
         else:
-            embedder.load_state_dict(checkpoint)
-        print("✅ Загружен обученный эмбеддер")
+            embedder.load_state_dict(
+                checkpoint
+            )
+
+        print(
+            "✅ Загружен обученный эмбеддер"
+        )
+
     except FileNotFoundError:
-        print("⚠️ Файл весов не найден, используется необученный эмбеддер")
+
+        print(
+            "⚠️ Файл весов не найден, "
+            "используется необученный эмбеддер"
+        )
 
     embedder.eval()
+
     return embedder
 
 
-embedder_state_path = pathlib.Path(__file__).parent / pathlib.Path(
-    './embedder_state_7x5_xy_energy_frac.pt'
+# НОВЫЙ checkpoint
+embedder_state_path = (
+    pathlib.Path(__file__).parent
+    / pathlib.Path(
+        './embedder_state_7x9_xy_energy_frac.pt'
+    )
 )
-embedder = load_embedder(str(embedder_state_path))
+
+embedder = load_embedder(
+    str(embedder_state_path)
+)
 
 
 def get_energy_embedding(data):
-    x = data[0].view(-1, 7, 7, 5)
-    return embedder.get_encoding(x).detach().numpy(), data[1]
+
+    x = data[0]
+
+    # Pipeline передает:
+    # (N, 10, 7, 9)
+
+    if isinstance(x, np.ndarray):
+
+        x = torch.tensor(
+            x,
+            dtype=torch.float32
+        )
+
+    else:
+
+        x = (
+            x
+            .detach()
+            .cpu()
+            .float()
+        )
+
+    if tuple(x.shape[1:]) != (10, 7, 9):
+
+        raise ValueError(
+            "PRD embedder ожидает форму "
+            "(N, 10, 7, 9), "
+            f"получена {tuple(x.shape)}"
+        )
+
+    with torch.no_grad():
+
+        embedding = (
+            embedder
+            .get_encoding(x)
+            .detach()
+            .cpu()
+            .numpy()
+        )
+
+    return (
+        embedding,
+        data[1]
+    )
+
+
+def get_energy_embedding(data):
+    x = data[0]
+
+    # Pipeline уже передает:
+    # (N, 10, 7, 9)
+
+    if isinstance(x, np.ndarray):
+        x = torch.tensor(
+            x,
+            dtype=torch.float32
+        )
+    else:
+        x = x.detach().cpu().float()
+
+    if tuple(x.shape[1:]) != (10, 7, 9):
+        raise ValueError(
+            "PRD embedder ожидает форму "
+            f"(N, 10, 7, 9), получена {tuple(x.shape)}"
+        )
+
+    embedding = (
+        embedder
+        .get_encoding(x)
+        .detach()
+        .cpu()
+        .numpy()
+    )
+
+    return embedding, data[1]
 
 
 def check_tensor_is_finite(t: np.ndarray) -> torch.Tensor:

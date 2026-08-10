@@ -25,7 +25,6 @@ from pipeline.regularizer import *
 from pipeline.results_storage import ResultsStorage
 from pipeline.storage import ExperimentsStorage
 from pipeline.train import Stepper, WganEpochTrainer, GanTrainer
-from pipeline.wandb_logger import WandbCM
 
 
 def form_metric() -> Metric:
@@ -102,11 +101,11 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
         gan_model = GAN(generator, discriminator, uniform_noise_generator)
 
     generator_stepper = Stepper(
-        optimizer=torch.optim.RMSprop(generator.parameters(), lr=1e-4)
+        optimizer=torch.optim.RMSprop(generator.parameters(), lr=5e-5)
     )
 
     discriminator_stepper = Stepper(
-        optimizer=torch.optim.RMSprop(discriminator.parameters(), lr=1e-4)
+        optimizer=torch.optim.RMSprop(discriminator.parameters(), lr=2e-5)
     )
 
     epoch_trainer = WganEpochTrainer(n_critic=5, batch_size=100)

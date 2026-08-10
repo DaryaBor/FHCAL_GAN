@@ -259,7 +259,7 @@ class TransformData(DataMetric):
 class CriticValuesDistributionMetric(DataMetric):
     NAME = 'Critic values distribution'
 
-    def __init__(self, values_cnt: int = 1000):
+    def __init__(self, values_cnt: int = 5000):
         super().__init__(initial_domain_data=False,
                          val_data_size=values_cnt,
                          gen_data_size=None,

@@ -102,7 +102,7 @@ def visualize_last_event(gan, y_point, y_momentum, epoch=None, figsize=(18, 8)):
         fig, axes = plt.subplots(2, 5, figsize=figsize)
         vmax = event_data.max()
 
-        for layer in range(7):
+        for layer in range(10):
             ax = axes[layer // 5, layer % 5]
             layer_data = event_data[layer, :, :]
 
