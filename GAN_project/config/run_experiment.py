@@ -25,7 +25,6 @@ from pipeline.regularizer import *
 from pipeline.results_storage import ResultsStorage
 from pipeline.storage import ExperimentsStorage
 from pipeline.train import Stepper, WganEpochTrainer, GanTrainer
-from pipeline.wandb_logger import WandbCM
 
 
 def form_metric() -> Metric:
@@ -60,7 +59,10 @@ def form_result_metrics() -> Metric:
 
 
 def form_dataset(train: bool = False) -> torch.utils.data.Dataset:
-    data_filepath = global_config.paths.data_dir_path + '/fhcal_data3.npz'
+    data_filepath = (
+        global_config.paths.data_dir_path
+        + "/fhcal_data_side_modules1619.npz"
+    )
     return data.UnifiedDatasetWrapper(data.get_physics_dataset(data_filepath, train=train))
 
 
@@ -126,7 +128,7 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
 
 
 def run() -> GAN:
-    model_name = 'physics_test_3d'
+    model_name = "physics_3d_side_modules_fine_grid"
     gan_trainer, epoch_trainer = form_gan_trainer(model_name=model_name, n_epochs=30)
     gan = None
     for epoch, gan in gan_trainer:

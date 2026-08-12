@@ -10,3 +10,5 @@ env/
 
 .DS_Store
 Thumbs.db
+GAN_project/data/*.npz
+GAN_project/data/*.zip

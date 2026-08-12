@@ -34,6 +34,57 @@ def save_dimensions_padding(kernel_size: Tuple[int, int]) -> Tuple[int, int]:
     return tuple(res)
 
 
+def to_fine_grid(x):
+    """
+    (B, 10, 7, 9) -> (B, 10, 42, 62)
+    """
+
+    if tuple(x.shape[1:]) != (10, 7, 9):
+        raise ValueError(
+            f"Ожидалась форма (B, 10, 7, 9), "
+            f"получена {tuple(x.shape)}"
+        )
+
+    # Модель работает с log1p(energy).
+    # Для распределения между маленькими клетками
+    # сначала восстанавливаем физическую энергию.
+    x = torch.expm1(x)
+
+    # Центральные модули имеют размер 15×15 см.
+    # При шаге 2.5 см один модуль превращается
+    # в 6×6 = 36 маленьких клеток.
+    center = x[:, :, :, 2:7] / 36
+    center = center.repeat_interleave(6, dim=2)
+    center = center.repeat_interleave(6, dim=3)
+
+    # Боковые модули существуют в пяти строках.
+    ear_rows = [0, 1, 3, 5, 6]
+
+    # Боковые модули имеют размер 20×20 см.
+    # Один модуль превращается в 8×8 = 64 клетки.
+    left = x[:, :, ear_rows, :2] / 64
+    right = x[:, :, ear_rows, 7:9] / 64
+
+    left = left.repeat_interleave(8, dim=2)
+    left = left.repeat_interleave(8, dim=3)
+
+    right = right.repeat_interleave(8, dim=2)
+    right = right.repeat_interleave(8, dim=3)
+
+    # Уши имеют высоту 40 клеток, а центр — 42.
+    # Располагаем уши симметрично, добавляя по одной
+    # нулевой строке сверху и снизу.
+    left = F.pad(left, (0, 0, 1, 1))
+    right = F.pad(right, (0, 0, 1, 1))
+
+    # Ширина:
+    # левое ухо 16 + центр 30 + правое ухо 16 = 62.
+    result = torch.cat([left, center, right], dim=3)
+
+    # Возвращаемся в пространство log1p.
+    return torch.log1p(result)
+
+
 
 class CaloganPhysicsDiscriminator(Discriminator):
     def __init__(self, act_func=F.leaky_relu, add_points_norms_and_angles: bool = True):
@@ -169,28 +220,9 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
         if self.add_points_norms_and_angles:
             point = aux.add_angle_and_norm(point)
 
-        # Генератор и датасет возвращают:
-        # (B, 7, 7, 5)
-        #
-        # Conv3d ожидает:
-        # (B, channels, depth, height, width)
-        #
-        # Поэтому добавляем один канал:
-        # (B, 7, 7, 5) → (B, 1, 7, 7, 5)
-
-        if EnergyDeposit.ndim == 4:
-            X = EnergyDeposit.unsqueeze(1)
-
-        elif EnergyDeposit.ndim == 5:
-            X = EnergyDeposit
-
-        else:
-            raise ValueError(
-                'Ожидалась форма EnergyDeposit '
-                '(batch, 7, 7, 5) или '
-                '(batch, 1, 7, 7, 5), '
-                f'но получена {tuple(EnergyDeposit.shape)}'
-            )
+        # (B, 10, 7, 9) → (B, 1, 10, 42, 62)
+        X = to_fine_grid(EnergyDeposit)
+        X = X.unsqueeze(1)
 
         X = self.activation(
             self.conv1(X),

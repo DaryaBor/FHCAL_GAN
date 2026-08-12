@@ -114,7 +114,7 @@ class SpectralNormalizer(Normalizer):
 
         if isinstance(module, nn.Linear):
             self.weight_matrix_fn = lambda: module.weight.data
-        elif isinstance(module, nn.Conv2d):
+        elif isinstance(module, (nn.Conv2d, nn.Conv3d)):
             self.weight_matrix_fn = lambda: module.weight.data.reshape(
                 (module.weight.data.shape[0], -1))
         else:
