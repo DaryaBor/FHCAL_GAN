@@ -1,2 +1,3 @@
-project_name: fhcal-gan
+project_name: bm-n-experiment
+workspace: elleth956428
 enable_logging: true

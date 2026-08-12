@@ -1,7 +1,7 @@
 import os
 
 from dataclasses import dataclass, field, is_dataclass
-from typing import Dict
+from typing import Dict, Optional
 
 import yaml
 try:
@@ -67,6 +67,7 @@ class PathsConfig:
 @dataclass
 class LoggerConfig:
     project_name: str
+    workspace: Optional[str] = None
     enable_logging: bool = True
 
 

@@ -32,11 +32,17 @@ def init_logger(model_name: str = '', config: Optional[LoggerConfig] = None):
     if not global_config.logger or not global_config.logger.enable_logging:
         return None
     project_name = global_config.logger.project_name
+    workspace = global_config.logger.workspace
     config = config or logger.get_default_config()
     @contextlib.contextmanager
     def logger_cm():
         try:
-            with CometCM(project_name=project_name, experiment_id=model_name, config=config) as comet_logger:
+            with CometCM(
+                project_name=project_name,
+                experiment_id=model_name,
+                config=config,
+                workspace=workspace,
+            ) as comet_logger:
                 yield comet_logger
         finally:
             pass
