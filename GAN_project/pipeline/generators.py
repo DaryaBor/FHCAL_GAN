@@ -470,7 +470,8 @@ class CaloganPhysicsGenerator3D(Generator):
         # (B, 16, 7, 7, 5)
 
         central_energy = F.softplus(
-            self.central_out(central_features)
+            self.central_out(central_features),
+            beta=5.0
         )
 
         # central_energy:
@@ -566,7 +567,8 @@ class CaloganPhysicsGenerator3D(Generator):
         # (B, 16, 10, 7, 2)
 
         left_energy = F.softplus(
-            self.left_out(left)
+            self.left_out(left),
+            beta=5.0
         )
 
         # left_energy:
@@ -636,7 +638,8 @@ class CaloganPhysicsGenerator3D(Generator):
         # (B, 16, 10, 7, 2)
 
         right_energy = F.softplus(
-            self.right_out(right)
+            self.right_out(right),
+            beta=5.0
         )
 
         # right_energy:

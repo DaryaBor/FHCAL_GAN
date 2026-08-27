@@ -74,17 +74,111 @@ def check_tensor(x: torch.Tensor, prefix: str = ''):
         return
     raise ValueError(msg)
 
-def layer_fraction_loss(real_x, fake_x, eps=1e-8):
-    real_layer = real_x.sum(dim=(2, 3))  # (batch, 7)
-    fake_layer = fake_x.sum(dim=(2, 3))
+def _layer_profile_loss(real_layer, fake_layer, eps=1e-8):
+
 
     real_total = real_layer.sum(dim=1, keepdim=True)
     fake_total = fake_layer.sum(dim=1, keepdim=True)
 
-    real_frac = real_layer.detach() / (real_total.detach() + eps)
-    fake_frac = fake_layer / (fake_total + eps)
+    # Берем только события, где REAL действительно
+    # содержит энергию в этой части FHCal
+    mask = real_total[:, 0] > eps
 
-    return torch.mean((fake_frac - real_frac) ** 2)
+    if not mask.any():
+        return fake_layer.sum() * 0.0
+
+    real_fraction = (
+        real_layer[mask].detach()
+        / (real_total[mask].detach() + eps)
+    )
+
+    fake_fraction = (
+        fake_layer[mask]
+        / (fake_total[mask] + eps)
+    )
+
+    return torch.mean(
+        (fake_fraction - real_fraction) ** 2
+    )
+
+
+def layer_fraction_loss(real_x, fake_x):
+    """
+    real_x и fake_x остаются в log1p(E).
+
+    Геометрия:
+        (B, 10, 7, 9)
+
+    CENTER: 7 слоев
+    LEFT:   10 слоев
+    RIGHT:  10 слоев
+    """
+
+    # -------------------------
+    # CENTER
+    # столбцы 2..6
+    # только первые 7 слоев
+    # -------------------------
+
+    real_center = real_x[
+        :, :7, :, 2:7
+    ].sum(dim=(2, 3))
+
+    fake_center = fake_x[
+        :, :7, :, 2:7
+    ].sum(dim=(2, 3))
+
+    center_loss = _layer_profile_loss(
+        real_center,
+        fake_center
+    )
+
+
+    # -------------------------
+    # LEFT
+    # столбцы 0..1
+    # все 10 слоев
+    # -------------------------
+
+    real_left = real_x[
+        :, :, :, 0:2
+    ].sum(dim=(2, 3))
+
+    fake_left = fake_x[
+        :, :, :, 0:2
+    ].sum(dim=(2, 3))
+
+    left_loss = _layer_profile_loss(
+        real_left,
+        fake_left
+    )
+
+
+    # -------------------------
+    # RIGHT
+    # столбцы 7..8
+    # все 10 слоев
+    # -------------------------
+
+    real_right = real_x[
+        :, :, :, 7:9
+    ].sum(dim=(2, 3))
+
+    fake_right = fake_x[
+        :, :, :, 7:9
+    ].sum(dim=(2, 3))
+
+    right_loss = _layer_profile_loss(
+        real_right,
+        fake_right
+    )
+
+
+    return (
+        center_loss
+        + left_loss
+        + right_loss
+    ) / 3.0
 
 
 def quantile_energy_loss(real_x: torch.Tensor, fake_x: torch.Tensor) -> torch.Tensor:
@@ -96,7 +190,7 @@ def quantile_energy_loss(real_x: torch.Tensor, fake_x: torch.Tensor) -> torch.Te
     real_e = real_x.sum(dim=tuple(range(1, real_x.ndim))).detach()
     fake_e = fake_x.sum(dim=tuple(range(1, fake_x.ndim)))
 
-    qs = torch.tensor([0.01, 0.05, 0.1, 0.5, 0.9, 0.95, 0.99], device=fake_x.device)
+    qs = torch.tensor([0.05, 0.1, 0.5, 0.9, 0.95], device=fake_x.device)
 
     real_q = torch.quantile(real_e, qs)
     fake_q = torch.quantile(fake_e, qs)
