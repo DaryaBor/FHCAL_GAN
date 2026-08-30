@@ -205,7 +205,7 @@ class WganEpochTrainer(GanEpochTrainer):
         lambda_energy: float = 0.005,
         lambda_sparsity: float = 0.0,
         lambda_layer_fraction: float = 5.0,
-        lambda_quantile: float = 0.02,
+        lambda_quantile: float = 0.04,
         debug_every: int = 50,
     ) -> None:
         self.n_critic = n_critic
