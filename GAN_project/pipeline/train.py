@@ -608,6 +608,7 @@ class GanTrainer:
 
         with logger_cm as logger:
             while epoch <= n_epochs:
+                print(f"ЭПОХА {epoch}/{n_epochs}")
                 if logger is not None:
                     logger.log_metrics(data={}, period='epoch', period_index=epoch, commit=False)
 
