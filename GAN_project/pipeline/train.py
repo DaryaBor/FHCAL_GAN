@@ -101,6 +101,39 @@ def _layer_profile_loss(real_layer, fake_layer, eps=1e-8):
         (fake_fraction - real_fraction) ** 2
     )
 
+## диагностическая функция, которая возвращает потери по каждой части FHCal отдельно
+def layer_fraction_losses(real_x, fake_x, eps=1e-8):
+
+    real_center = real_x[:, :7, :, 2:7].sum(dim=(2, 3))
+    fake_center = fake_x[:, :7, :, 2:7].sum(dim=(2, 3))
+
+    real_left = real_x[:, :, :, 0:2].sum(dim=(2, 3))
+    fake_left = fake_x[:, :, :, 0:2].sum(dim=(2, 3))
+
+    real_right = real_x[:, :, :, 7:9].sum(dim=(2, 3))
+    fake_right = fake_x[:, :, :, 7:9].sum(dim=(2, 3))
+
+    center_loss = _layer_profile_loss(
+        real_center,
+        fake_center,
+        eps
+    )
+
+    left_loss = _layer_profile_loss(
+        real_left,
+        fake_left,
+        eps
+    )
+
+    right_loss = _layer_profile_loss(
+        real_right,
+        fake_right,
+        eps
+    )
+
+    return center_loss, left_loss, right_loss
+
+
 
 def layer_fraction_loss(real_x, fake_x):
     """
@@ -260,6 +293,9 @@ class WganEpochTrainer(GanEpochTrainer):
         regularizer_loss_total = 0.
         disc_grad_norm_total = 0.
         gen_grad_norm_total = 0.
+        gen_center_fraction_loss_total = 0.
+        gen_left_fraction_loss_total = 0.
+        gen_right_fraction_loss_total = 0.
 
         last_disc_real_vals = None
         last_disc_gen_vals = None
@@ -356,7 +392,15 @@ class WganEpochTrainer(GanEpochTrainer):
             sparsity_loss = gen_batch_x.abs().mean()
             layer_frac_loss = layer_fraction_loss(real_batch_x, gen_batch_x)
             quantile_loss = quantile_energy_loss(real_batch_x, gen_batch_x)
-
+            ## diagnostic losses for each part of FHCal 
+            center_loss, left_loss, right_loss = layer_fraction_losses(
+            real_batch_x,
+            gen_batch_x
+            )
+            gen_center_fraction_loss_total += center_loss.item() * len(gen_batch_x)
+            gen_left_fraction_loss_total += left_loss.item() * len(gen_batch_x)
+            gen_right_fraction_loss_total += right_loss.item() * len(gen_batch_x)
+            
             gen_loss = (
                 adv_gen_loss
                 + self.lambda_energy * energy_loss
@@ -521,6 +565,9 @@ class WganEpochTrainer(GanEpochTrainer):
                         len(dataloader) * self.n_critic
                     ),
                     'train/generator/grad_norm': gen_grad_norm_total / len(dataloader),
+                    'train/generator/center_fraction_loss': gen_center_fraction_loss_total / len(train_dataset),
+                    'train/generator/left_fraction_loss': gen_left_fraction_loss_total / len(train_dataset),
+                    'train/generator/right_fraction_loss': gen_right_fraction_loss_total / len(train_dataset),
                 },
                 period='epoch',
                 commit=False
