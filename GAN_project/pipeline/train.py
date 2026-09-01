@@ -339,7 +339,7 @@ class WganEpochTrainer(GanEpochTrainer):
                     loss += regularizer_loss
 
                 loss.backward()
-
+                critic_loss_total += loss.item() * len(gen_batch_x)
                 disc_grad_norm = calc_grad_norm(gan_model.discriminator)
                 disc_grad_norm_total += disc_grad_norm
 
@@ -366,7 +366,6 @@ class WganEpochTrainer(GanEpochTrainer):
                 last_disc_real_vals = disc_real_vals
                 last_disc_gen_vals = disc_gen_vals
 
-            critic_loss_total += loss.item() * len(gen_batch_x)
             gan_model.generator.requires_grad_(True)
 
             # =========================
@@ -538,8 +537,8 @@ class WganEpochTrainer(GanEpochTrainer):
 
             logger.log_metrics(
                 data={
-                    'train/critic/loss': critic_loss_total / len(train_dataset),
-                    'train/critic/adv_loss': critic_adv_loss_total / len(train_dataset),
+                    'train/critic/loss': ( critic_loss_total   / (len(train_dataset) * self.n_critic)),
+                    'train/critic/adv_loss':  (critic_adv_loss_total / (len(train_dataset) * self.n_critic)),
                     'train/generator/loss': gen_loss_total / len(train_dataset),
                     'train/generator/adv_loss': gen_adv_loss_total / len(train_dataset),
                     'train/generator/energy_loss': gen_energy_loss_total / len(train_dataset),
@@ -573,7 +572,7 @@ class WganEpochTrainer(GanEpochTrainer):
                 commit=False
             )
 
-        avg_loss_d = critic_loss_total / len(train_dataset)
+        avg_loss_d = (critic_loss_total / (len(train_dataset) * self.n_critic))
         avg_loss_g = gen_loss_total / len(train_dataset)
         avg_adv_g = gen_adv_loss_total / len(train_dataset)
         avg_energy_loss = gen_energy_loss_total / len(train_dataset)
