@@ -214,21 +214,44 @@ def layer_fraction_loss(real_x, fake_x):
     ) / 3.0
 
 
-def quantile_energy_loss(real_x: torch.Tensor, fake_x: torch.Tensor) -> torch.Tensor:
-    """
-    Дополнительный loss для генератора: подгоняет квантили распределения полной энергии.
-    Градиент идет только через fake_x, real_x используется как target.
-    real_x/fake_x ожидаются в формате (batch, layers, rows, cols), например (B, 7, 7, 5).
-    """
-    real_e = real_x.sum(dim=tuple(range(1, real_x.ndim))).detach()
-    fake_e = fake_x.sum(dim=tuple(range(1, fake_x.ndim)))
+def quantile_energy_loss(
+    real_x: torch.Tensor,
+    fake_x: torch.Tensor
+) -> torch.Tensor:
 
-    qs = torch.tensor([0.05, 0.1, 0.5, 0.9, 0.95, 0.975], device=fake_x.device)
+    # real_x/fake_x находятся в log1p(E_cell)
 
-    real_q = torch.quantile(real_e, qs)
-    fake_q = torch.quantile(fake_e, qs)
+    dims = tuple(range(1, real_x.ndim))
 
-    return torch.mean((fake_q - real_q) ** 2)
+    # Восстанавливаем физическую полную энергию события,
+    # но затем снова переводим TOTAL в log-пространство.
+
+    real_total_log = torch.log1p(
+        torch.expm1(real_x).sum(dim=dims)
+    ).detach()
+
+    fake_total_log = torch.log1p(
+        torch.expm1(fake_x).sum(dim=dims)
+    )
+
+    qs = torch.tensor(
+        [0.05, 0.1, 0.5, 0.9, 0.95, 0.975],
+        device=fake_x.device
+    )
+
+    real_q = torch.quantile(
+        real_total_log,
+        qs
+    )
+
+    fake_q = torch.quantile(
+        fake_total_log,
+        qs
+    )
+
+    return torch.mean(
+        (fake_q - real_q) ** 2
+    )
 
 class WganEpochTrainer(GanEpochTrainer):
     def __init__(
