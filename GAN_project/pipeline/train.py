@@ -223,7 +223,7 @@ def quantile_energy_loss(real_x: torch.Tensor, fake_x: torch.Tensor) -> torch.Te
     real_e = real_x.sum(dim=tuple(range(1, real_x.ndim))).detach()
     fake_e = fake_x.sum(dim=tuple(range(1, fake_x.ndim)))
 
-    qs = torch.tensor([0.05, 0.1, 0.5, 0.9, 0.95], device=fake_x.device)
+    qs = torch.tensor([0.05, 0.1, 0.5, 0.9, 0.95, 0.975], device=fake_x.device)
 
     real_q = torch.quantile(real_e, qs)
     fake_q = torch.quantile(fake_e, qs)
