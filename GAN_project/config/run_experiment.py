@@ -101,7 +101,7 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
         gan_model = GAN(generator, discriminator, uniform_noise_generator)
 
     generator_stepper = Stepper(
-        optimizer=torch.optim.RMSprop(generator.parameters(), lr=5e-5)
+        optimizer=torch.optim.RMSprop(generator.parameters(), lr=2e-5)
     )
 
     discriminator_stepper = Stepper(
