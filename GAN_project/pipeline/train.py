@@ -253,6 +253,81 @@ def quantile_energy_loss(
         (fake_q - real_q) ** 2
     )
 
+def peak_concentration_loss(
+    real_x: torch.Tensor,
+    fake_x: torch.Tensor,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+
+
+    real_e = torch.expm1(real_x)
+    fake_e = torch.expm1(fake_x)
+
+
+    real_2d = real_e.sum(dim=1)
+    fake_2d = fake_e.sum(dim=1)
+
+    # (B, 7, 9) -> (B, 63)
+
+    real_flat = real_2d.flatten(start_dim=1)
+    fake_flat = fake_2d.flatten(start_dim=1)
+
+    real_total = real_flat.sum(dim=1)
+    fake_total = fake_flat.sum(dim=1)
+
+    losses = []
+
+    # -------------------------
+    # top-1, top-3, top-5
+    # -------------------------
+
+    for k in [1, 3, 5]:
+
+        real_top = torch.topk(
+            real_flat,
+            k=k,
+            dim=1
+        ).values.sum(dim=1)
+
+        fake_top = torch.topk(
+            fake_flat,
+            k=k,
+            dim=1
+        ).values.sum(dim=1)
+
+        real_fraction = (
+            real_top /
+            (real_total + eps)
+        ).detach()
+
+        fake_fraction = (
+            fake_top /
+            (fake_total + eps)
+        )
+
+        qs = torch.tensor(
+            [0.1, 0.5, 0.9],
+            device=fake_x.device
+        )
+
+        real_q = torch.quantile(
+            real_fraction,
+            qs
+        )
+
+        fake_q = torch.quantile(
+            fake_fraction,
+            qs
+        )
+
+        losses.append(
+            torch.mean(
+                (fake_q - real_q) ** 2
+            )
+        )
+
+    return torch.stack(losses).mean()
+
 class WganEpochTrainer(GanEpochTrainer):
     def __init__(
         self,
@@ -262,6 +337,7 @@ class WganEpochTrainer(GanEpochTrainer):
         lambda_sparsity: float = 0.0,
         lambda_layer_fraction: float = 5.0,
         lambda_quantile: float = 0.04,
+        lambda_peak: float = 0.1,
         debug_every: int = 50,
     ) -> None:
         self.n_critic = n_critic
@@ -271,6 +347,7 @@ class WganEpochTrainer(GanEpochTrainer):
         self.lambda_layer_fraction = lambda_layer_fraction
         self.lambda_quantile = lambda_quantile
         self.debug_every = debug_every
+        self.lambda_peak = lambda_peak
 
         self.gen_batch_cnt = 0
         self.disc_batch_cnt = 0
@@ -414,7 +491,6 @@ class WganEpochTrainer(GanEpochTrainer):
             sparsity_loss = gen_batch_x.abs().mean()
             layer_frac_loss = layer_fraction_loss(real_batch_x, gen_batch_x)
             quantile_loss = quantile_energy_loss(real_batch_x, gen_batch_x)
-            ## diagnostic losses for each part of FHCal 
             center_loss, left_loss, right_loss = layer_fraction_losses(
             real_batch_x,
             gen_batch_x
@@ -422,13 +498,17 @@ class WganEpochTrainer(GanEpochTrainer):
             gen_center_fraction_loss_total += center_loss.item() * len(gen_batch_x)
             gen_left_fraction_loss_total += left_loss.item() * len(gen_batch_x)
             gen_right_fraction_loss_total += right_loss.item() * len(gen_batch_x)
-            
+            peak_loss = peak_concentration_loss(
+            real_batch_x,
+            gen_batch_x
+            )
             gen_loss = (
                 adv_gen_loss
                 + self.lambda_energy * energy_loss
                 + self.lambda_sparsity * sparsity_loss
                 + self.lambda_layer_fraction * layer_frac_loss
                 + self.lambda_quantile * quantile_loss
+                + self.lambda_peak * peak_loss
             )
             if batch_index % self.debug_every == 0:
                 print("\n=== ENERGY DEBUG ===")
@@ -468,6 +548,14 @@ class WganEpochTrainer(GanEpochTrainer):
                 print("lambda_quantile * quantile_loss:",
                       (self.lambda_quantile * quantile_loss).item())
                 print("gen_loss total:", gen_loss.item())
+                print("peak_loss:", peak_loss.item())
+                print(
+                    "weighted peak_loss:",
+                    (
+                        self.lambda_peak
+                        * peak_loss
+                    ).item()
+                )
 
             self.gen_batch_cnt += 1
 
