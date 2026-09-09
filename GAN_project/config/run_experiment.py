@@ -126,7 +126,7 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
 
 def run() -> GAN:
     model_name = 'physics_test_3d'
-    gan_trainer, epoch_trainer = form_gan_trainer(model_name=model_name, n_epochs=15)
+    gan_trainer, epoch_trainer = form_gan_trainer(model_name=model_name, n_epochs=30)
     gan = None
     for epoch, gan in gan_trainer:
         pass
