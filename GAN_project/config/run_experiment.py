@@ -100,15 +100,35 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
     if gan_model is None:
         gan_model = GAN(generator, discriminator, uniform_noise_generator)
 
+    generator_optimizer = torch.optim.RMSprop(
+        generator.parameters(),
+        lr=2e-5
+    )
+    
+    generator_scheduler = torch.optim.lr_scheduler.MultiStepLR(
+        generator_optimizer,
+        milestones=[15, 25],
+        gamma=0.5
+    )
+    
     generator_stepper = Stepper(
-        optimizer=torch.optim.RMSprop(generator.parameters(), lr=2e-5)
+        optimizer=generator_optimizer,
+        scheduler=generator_scheduler,
+        scheduler_mode='epoch'
     )
-
+    
+    
     discriminator_stepper = Stepper(
-        optimizer=torch.optim.RMSprop(discriminator.parameters(), lr=2e-5)
+        optimizer=torch.optim.RMSprop(
+            discriminator.parameters(),
+            lr=2e-5
+        )
     )
-
-    epoch_trainer = WganEpochTrainer(n_critic=5, batch_size=100)
+    
+    epoch_trainer = WganEpochTrainer(
+        n_critic=5,
+        batch_size=256
+    )
 
     model_dir = experiments_storage.get_model_dir(model_name)
     trainer = GanTrainer(model_dir=model_dir, use_saved_checkpoint=True, save_checkpoint_once_in_epoch=5)
@@ -125,7 +145,7 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
 
 
 def run() -> GAN:
-    model_name = 'physics_test_3d'
+    model_name = 'physics_test_3d_lr'
     gan_trainer, epoch_trainer = form_gan_trainer(model_name=model_name, n_epochs=30)
     gan = None
     for epoch, gan in gan_trainer:
