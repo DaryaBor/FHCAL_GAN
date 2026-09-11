@@ -215,43 +215,91 @@ def layer_fraction_loss(real_x, fake_x):
 
 
 def quantile_energy_loss(
-    real_x: torch.Tensor,
-    fake_x: torch.Tensor
-) -> torch.Tensor:
+    real_x,
+    fake_x,
+    eps=1e-8
+):
+    """
+    real_x и fake_x находятся в log1p(E).
 
-    # real_x/fake_x находятся в log1p(E_cell)
+    Loss сравнивает квантили полной
+    физической энергии события,
+    но делает это в log1p-шкале.
+    """
 
-    dims = tuple(range(1, real_x.ndim))
-
-    # Восстанавливаем физическую полную энергию события,
-    # но затем снова переводим TOTAL в log-пространство.
-
-    real_total_log = torch.log1p(
-        torch.expm1(real_x).sum(dim=dims)
-    ).detach()
-
-    fake_total_log = torch.log1p(
-        torch.expm1(fake_x).sum(dim=dims)
+    real_energy = torch.log1p(
+        torch.expm1(real_x)
+        .sum(
+            dim=tuple(
+                range(1, real_x.ndim)
+            )
+        )
+        + eps
     )
 
-    qs = torch.tensor(
-        [0.05, 0.1, 0.5, 0.9, 0.95, 0.975],
-        device=fake_x.device
+    fake_energy = torch.log1p(
+        torch.expm1(fake_x)
+        .sum(
+            dim=tuple(
+                range(1, fake_x.ndim)
+            )
+        )
+        + eps
     )
+
+
+    # REAL не должен получать градиенты
+    real_energy = real_energy.detach()
+
+
+    quantiles = torch.tensor(
+        [
+            0.50,
+            0.90,
+            0.95,
+            0.975,
+            0.99,
+        ],
+        device=fake_x.device,
+        dtype=fake_x.dtype,
+    )
+
+
+    # Чем дальше в хвост,
+    # тем больше его значение для loss
+    weights = torch.tensor(
+        [
+            0.5,
+            1.0,
+            2.0,
+            3.0,
+            4.0,
+        ],
+        device=fake_x.device,
+        dtype=fake_x.dtype,
+    )
+
 
     real_q = torch.quantile(
-        real_total_log,
-        qs
+        real_energy,
+        quantiles
     )
 
     fake_q = torch.quantile(
-        fake_total_log,
-        qs
+        fake_energy,
+        quantiles
     )
 
-    return torch.mean(
-        (fake_q - real_q) ** 2
-    )
+
+    loss_per_quantile = (
+        fake_q - real_q
+    ) ** 2
+
+
+    return (
+        weights
+        * loss_per_quantile
+    ).sum() / weights.sum()
 
 def peak_concentration_loss(
     real_x: torch.Tensor,
