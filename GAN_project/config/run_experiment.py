@@ -100,21 +100,12 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
     if gan_model is None:
         gan_model = GAN(generator, discriminator, uniform_noise_generator)
 
-    generator_optimizer = torch.optim.RMSprop(
-        generator.parameters(),
-        lr=2e-5
-    )
     
-    generator_scheduler = torch.optim.lr_scheduler.MultiStepLR(
-        generator_optimizer,
-        milestones=[15, 25],
-        gamma=0.5
-    )
-    
-    generator_stepper = Stepper(
-        optimizer=generator_optimizer,
-        scheduler=generator_scheduler,
-        scheduler_mode='epoch'
+     generator_stepper = Stepper(
+      optimizer=torch.optim.RMSprop(
+          generator.parameters(),
+          lr=2e-5
+      )
     )
     
     
@@ -127,7 +118,7 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
     
     epoch_trainer = WganEpochTrainer(
         n_critic=5,
-        batch_size=256
+        batch_size=100
     )
 
     model_dir = experiments_storage.get_model_dir(model_name)
@@ -145,8 +136,8 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
 
 
 def run() -> GAN:
-    model_name = 'physics_test_3d_lr'
-    gan_trainer, epoch_trainer = form_gan_trainer(model_name=model_name, n_epochs=30)
+    model_name = 'physics_test_enerqy_aware'
+    gan_trainer, epoch_trainer = form_gan_trainer(model_name=model_name, n_epochs=15)
     gan = None
     for epoch, gan in gan_trainer:
         pass
