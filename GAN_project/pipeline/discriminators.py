@@ -97,25 +97,14 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
         super().__init__()
 
         self.activation = act_func
+
         self.add_points_norms_and_angles = (
             add_points_norms_and_angles
         )
 
-        # Вход:
-        # (B, 1, 10, 7, 9)
-        #
-        # C = 1
-        # D = 10
-        # H = 7
-        # W = 9
-
-        # -----------------------------------------
-        # Conv 1
-        #
-        # (B, 1, 10, 7, 9)
-        # ->
-        # (B, 32, 10, 7, 9)
-        # -----------------------------------------
+        # =====================================================
+        # Conv3D
+        # =====================================================
 
         self.conv1 = spectral_norm(
             nn.Conv3d(
@@ -127,16 +116,6 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
             )
         )
 
-        # -----------------------------------------
-        # Conv 2
-        #
-        # depth НЕ уменьшаем
-        #
-        # (B, 32, 10, 7, 9)
-        # ->
-        # (B, 64, 10, 4, 5)
-        # -----------------------------------------
-
         self.conv2 = spectral_norm(
             nn.Conv3d(
                 in_channels=32,
@@ -146,14 +125,6 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
                 padding=1,
             )
         )
-
-        # -----------------------------------------
-        # Conv 3
-        #
-        # (B, 64, 10, 4, 5)
-        # ->
-        # (B, 128, 10, 4, 5)
-        # -----------------------------------------
 
         self.conv3 = spectral_norm(
             nn.Conv3d(
@@ -165,14 +136,6 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
             )
         )
 
-        # -----------------------------------------
-        # Conv 4
-        #
-        # (B, 128, 10, 4, 5)
-        # ->
-        # (B, 256, 10, 4, 5)
-        # -----------------------------------------
-
         self.conv4 = spectral_norm(
             nn.Conv3d(
                 in_channels=128,
@@ -182,14 +145,6 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
                 padding=1,
             )
         )
-
-        # -----------------------------------------
-        # Global pooling
-        #
-        # (B, 256, 10, 4, 5)
-        # ->
-        # (B, 256, 1, 1, 1)
-        # -----------------------------------------
 
         self.adaptive_pool = nn.AdaptiveAvgPool3d(
             (1, 1, 1)
@@ -201,13 +156,17 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
             else 5
         )
 
-        # -----------------------------------------
-        # Fully connected part
-        # -----------------------------------------
+        # =====================================================
+        # Fully connected
+        #
+        # +1 = log_total_energy
+        # =====================================================
 
         self.fc1 = spectral_norm(
             nn.Linear(
-                256 + condition_dim,
+                256
+                + condition_dim
+                + 1,
                 64,
             )
         )
@@ -235,49 +194,89 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
         point, momentum = y
 
         if self.add_points_norms_and_angles:
-            point = aux.add_angle_and_norm(point)
+            point = aux.add_angle_and_norm(
+                point
+            )
 
-        # Датасет и генератор:
-        # (B, 10, 7, 9)
-        #
-        # Conv3d:
-        # (B, C, D, H, W)
-        #
-        # Поэтому:
-        # (B, 10, 7, 9)
-        # ->
-        # (B, 1, 10, 7, 9)
+        # =====================================================
+        # 1. ENERGY-AWARE FEATURE
+        # =====================================================
+
+        # EnergyDeposit сейчас в log1p(E)
+        physical_energy = torch.expm1(
+            EnergyDeposit
+        )
+
+        # Суммируем всё кроме batch dimension
+        energy_dims = tuple(
+            range(
+                1,
+                physical_energy.ndim
+            )
+        )
+
+        total_energy = physical_energy.sum(
+            dim=energy_dims
+        )
+
+        # Используем log-шкалу для стабильности
+        log_total_energy = torch.log1p(
+            total_energy
+        ).unsqueeze(1)
+
+        # log_total_energy:
+        # (B, 1)
+
+
+        # =====================================================
+        # 2. ПОДГОТОВКА ВХОДА ДЛЯ Conv3D
+        # =====================================================
 
         if EnergyDeposit.ndim == 4:
 
-            if tuple(EnergyDeposit.shape[1:]) != (10, 7, 9):
+            if tuple(
+                EnergyDeposit.shape[1:]
+            ) != (10, 7, 9):
+
                 raise ValueError(
                     "Ожидалась геометрия "
                     "(batch, 10, 7, 9), "
-                    f"получена {tuple(EnergyDeposit.shape)}"
+                    f"получена "
+                    f"{tuple(EnergyDeposit.shape)}"
                 )
 
             X = EnergyDeposit.unsqueeze(1)
 
         elif EnergyDeposit.ndim == 5:
 
-            if tuple(EnergyDeposit.shape[1:]) != (1, 10, 7, 9):
+            if tuple(
+                EnergyDeposit.shape[1:]
+            ) != (1, 10, 7, 9):
+
                 raise ValueError(
                     "Ожидалась геометрия "
                     "(batch, 1, 10, 7, 9), "
-                    f"получена {tuple(EnergyDeposit.shape)}"
+                    f"получена "
+                    f"{tuple(EnergyDeposit.shape)}"
                 )
 
             X = EnergyDeposit
 
         else:
+
             raise ValueError(
                 "Ожидалась форма "
                 "(batch, 10, 7, 9) "
                 "или "
                 "(batch, 1, 10, 7, 9), "
-                f"получена {tuple(EnergyDeposit.shape)}"
+                f"получена "
+                f"{tuple(EnergyDeposit.shape)}"
             )
+
+
+        # =====================================================
+        # 3. Conv3D
+        # =====================================================
 
         X = F.leaky_relu(
             self.conv1(X),
@@ -299,26 +298,51 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
             negative_slope=0.2,
         )
 
-        # (B, 256, 10, 4, 5)
-        # ->
-        # (B, 256, 1, 1, 1)
+
+        # =====================================================
+        # 4. Global pooling
+        # =====================================================
 
         X = self.adaptive_pool(X)
 
-        # ->
+        X = X.flatten(
+            start_dim=1
+        )
+
+        # X:
         # (B, 256)
 
-        X = X.flatten(start_dim=1)
+
+        # =====================================================
+        # 5. CONDITIONS
+        # =====================================================
 
         condition = torch.cat(
-            [momentum, point],
+            [
+                momentum,
+                point,
+            ],
             dim=1,
         )
 
+
+        # =====================================================
+        # 6. ENERGY-AWARE CONCATENATION
+        # =====================================================
+
         X = torch.cat(
-            [X, condition],
+            [
+                X,
+                condition,
+                log_total_energy,
+            ],
             dim=1,
         )
+
+
+        # =====================================================
+        # 7. Critic output
+        # =====================================================
 
         X = F.leaky_relu(
             self.fc1(X),
