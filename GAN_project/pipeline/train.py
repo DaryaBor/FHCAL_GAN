@@ -138,15 +138,21 @@ def layer_fraction_losses(real_x, fake_x, eps=1e-8):
 def layer_fraction_loss(real_x, fake_x):
     """
     real_x и fake_x остаются в log1p(E).
-
-    Геометрия:
-        (B, 10, 7, 9)
-
-    CENTER: 7 слоев
-    LEFT:   10 слоев
-    RIGHT:  10 слоев
     """
 
+    real_global = real_x.sum(
+        dim=(2, 3)
+    )
+
+    fake_global = fake_x.sum(
+        dim=(2, 3)
+    )
+
+    global_loss = _layer_profile_loss(
+        real_global,
+        fake_global
+    )
+    
     # -------------------------
     # CENTER
     # столбцы 2..6
@@ -207,11 +213,16 @@ def layer_fraction_loss(real_x, fake_x):
     )
 
 
-    return (
+    regional_loss = (
         center_loss
         + left_loss
         + right_loss
     ) / 3.0
+    
+    return (
+        0.5 * global_loss
+        + 0.5 * regional_loss
+    )
 
 
 def quantile_energy_loss(
@@ -255,6 +266,8 @@ def quantile_energy_loss(
     quantiles = torch.tensor(
         [
             0.50,
+            0.75,
+            0.80,
             0.90,
             0.95,
             0.975,
@@ -270,6 +283,8 @@ def quantile_energy_loss(
     weights = torch.tensor(
         [
             0.5,
+            1.0,
+            1.0,
             1.0,
             2.0,
             3.0,
@@ -385,7 +400,7 @@ class WganEpochTrainer(GanEpochTrainer):
         lambda_sparsity: float = 0.0,
         lambda_layer_fraction: float = 5.0,
         lambda_quantile: float = 0.04,
-        lambda_peak: float = 0.1,
+        lambda_peak: float = 0.2,
         debug_every: int = 50,
     ) -> None:
         self.n_critic = n_critic
