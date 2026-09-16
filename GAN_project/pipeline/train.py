@@ -526,11 +526,43 @@ class WganEpochTrainer(GanEpochTrainer):
 
             adv_gen_loss = observations.mean()
 
-            fake_energy = gen_batch_x.sum(dim=tuple(range(1, gen_batch_x.ndim)))
-            real_energy = real_batch_x.sum(dim=tuple(range(1, real_batch_x.ndim)))
-
-
-            energy_loss = torch.mean((fake_energy - real_energy) ** 2)
+            fake_energy = torch.log1p(
+                torch.expm1(gen_batch_x).sum(
+                    dim=tuple(
+                        range(1, gen_batch_x.ndim)
+                    )
+                ) 
+            )
+            
+            real_energy = torch.log1p(
+                torch.expm1(real_batch_x).sum(
+                    dim=tuple(
+                        range(1, real_batch_x.ndim)
+                    )
+                ) 
+            ).detach()
+            
+            
+        
+            real_mean = real_energy.mean()
+            fake_mean = fake_energy.mean()
+            
+            
+     
+            real_std = real_energy.std(
+                unbiased=False
+            )
+            
+            fake_std = fake_energy.std(
+                unbiased=False
+            )
+            
+            
+            energy_loss = (
+                (fake_mean - real_mean) ** 2
+                +
+                (fake_std - real_std) ** 2
+            )
 
             sparsity_loss = gen_batch_x.abs().mean()
             layer_frac_loss = layer_fraction_loss(real_batch_x, gen_batch_x)
