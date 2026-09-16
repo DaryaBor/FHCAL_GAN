@@ -139,20 +139,6 @@ def layer_fraction_loss(real_x, fake_x):
     """
     real_x и fake_x остаются в log1p(E).
     """
-
-    real_global = real_x.sum(
-        dim=(2, 3)
-    )
-
-    fake_global = fake_x.sum(
-        dim=(2, 3)
-    )
-
-    global_loss = _layer_profile_loss(
-        real_global,
-        fake_global
-    )
-    
     # -------------------------
     # CENTER
     # столбцы 2..6
@@ -213,16 +199,11 @@ def layer_fraction_loss(real_x, fake_x):
     )
 
 
-    regional_loss = (
+    return (
         center_loss
         + left_loss
         + right_loss
     ) / 3.0
-    
-    return (
-        0.5 * global_loss
-        + 0.5 * regional_loss
-    )
 
 
 def quantile_energy_loss(
@@ -400,7 +381,7 @@ class WganEpochTrainer(GanEpochTrainer):
         lambda_sparsity: float = 0.0,
         lambda_layer_fraction: float = 5.0,
         lambda_quantile: float = 0.04,
-        lambda_peak: float = 0.2,
+        lambda_peak: float = 0.1,
         debug_every: int = 50,
     ) -> None:
         self.n_critic = n_critic
