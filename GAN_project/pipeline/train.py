@@ -104,6 +104,9 @@ def _layer_profile_loss(real_layer, fake_layer, eps=1e-8):
 ## диагностическая функция, которая возвращает потери по каждой части FHCal отдельно
 def layer_fraction_losses(real_x, fake_x, eps=1e-8):
 
+    real_x = torch.expm1(real_x)
+    fake_x = torch.expm1(fake_x)
+
     real_center = real_x[:, :7, :, 2:7].sum(dim=(2, 3))
     fake_center = fake_x[:, :7, :, 2:7].sum(dim=(2, 3))
 
@@ -136,9 +139,9 @@ def layer_fraction_losses(real_x, fake_x, eps=1e-8):
 
 
 def layer_fraction_loss(real_x, fake_x):
-    """
-    real_x и fake_x остаются в log1p(E).
-    """
+    real_x = torch.expm1(real_x)
+    fake_x = torch.expm1(fake_x)
+
     # -------------------------
     # CENTER
     # столбцы 2..6
@@ -401,10 +404,6 @@ class WganEpochTrainer(GanEpochTrainer):
 
         self.gen_batch_cnt = 0
         self.disc_batch_cnt = 0
-        self.loss_arr = []
-
-    def get_loss_arr(self):
-        return self.loss_arr
 
     def train_epoch(self, gan_model: GAN,
                     train_dataset: torch.utils.data.Dataset, val_dataset: torch.utils.data.Dataset,
