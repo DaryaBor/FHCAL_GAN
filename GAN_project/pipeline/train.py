@@ -246,6 +246,7 @@ def quantile_energy_loss(
 
     quantiles = torch.tensor(
         [
+            0.25,
             0.50,
             0.75,
             0.80,
@@ -263,7 +264,8 @@ def quantile_energy_loss(
     # тем больше его значение для loss
     weights = torch.tensor(
         [
-            0.5,
+            1.0,
+            1.0,
             1.0,
             1.0,
             1.0,
@@ -546,22 +548,47 @@ class WganEpochTrainer(GanEpochTrainer):
         
             real_mean = real_energy.mean()
             fake_mean = fake_energy.mean()
-            
-            
-     
-            real_std = real_energy.std(
-                unbiased=False
+
+            real_q25 = torch.quantile(
+                real_energy.detach(),
+                0.25
             )
             
-            fake_std = fake_energy.std(
-                unbiased=False
+            real_median = torch.quantile(
+                real_energy.detach(),
+                0.50
             )
+            
+            real_q75 = torch.quantile(
+                real_energy.detach(),
+                0.75
+            )
+            
+            
+            fake_q25 = torch.quantile(
+                fake_energy,
+                0.25
+            )
+            
+            fake_median = torch.quantile(
+                fake_energy,
+                0.50
+            )
+            
+            fake_q75 = torch.quantile(
+                fake_energy,
+                0.75
+            )
+            
+            
+            real_iqr = real_q75 - real_q25
+            fake_iqr = fake_q75 - fake_q25
             
             
             energy_loss = (
-                (fake_mean - real_mean) ** 2
+                (fake_median - real_median) ** 2
                 +
-                (fake_std - real_std) ** 2
+                (fake_iqr - real_iqr) ** 2
             )
 
             sparsity_loss = gen_batch_x.abs().mean()
