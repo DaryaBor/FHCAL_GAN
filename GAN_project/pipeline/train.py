@@ -246,14 +246,16 @@ def quantile_energy_loss(
 
     quantiles = torch.tensor(
         [
-            0.25,
-            0.50,
-            0.75,
-            0.80,
-            0.90,
-            0.95,
-            0.975,
-            0.99,
+        0.20,
+        0.30,
+        0.40,
+        0.50,
+        0.60,
+        0.70,
+        0.80,
+        0.90,
+        0.95,
+        0.99,
         ],
         device=fake_x.device,
         dtype=fake_x.dtype,
@@ -264,6 +266,8 @@ def quantile_energy_loss(
     # тем больше его значение для loss
     weights = torch.tensor(
         [
+            1.0,
+            1.0,
             1.0,
             1.0,
             1.0,
