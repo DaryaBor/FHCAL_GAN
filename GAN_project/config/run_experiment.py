@@ -43,7 +43,7 @@ def form_metric() -> Metric:
 
 
 def form_metric_predicate() -> Optional[TrainPredicate]:
-    return IgnoreFirstNEpochsPredicate(20) & EachNthEpochPredicate(5)
+    return IgnoreFirstNEpochsPredicate(0) & EachNthEpochPredicate(5)
     # return None
 
 
