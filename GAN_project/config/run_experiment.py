@@ -43,7 +43,7 @@ def form_metric() -> Metric:
 
 
 def form_metric_predicate() -> Optional[TrainPredicate]:
-    return IgnoreFirstNEpochsPredicate(0) & EachNthEpochPredicate(5)
+    return IgnoreFirstNEpochsPredicate(5) & EachNthEpochPredicate(5)
     # return None
 
 
@@ -101,11 +101,11 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
         gan_model = GAN(generator, discriminator, uniform_noise_generator)
 
     generator_stepper = Stepper(
-        optimizer=torch.optim.RMSprop(generator.parameters(), lr=5e-5)
+        optimizer=torch.optim.RMSprop(generator.parameters(), lr=1e-4)
     )
 
     discriminator_stepper = Stepper(
-        optimizer=torch.optim.RMSprop(discriminator.parameters(), lr=2e-5)
+        optimizer=torch.optim.RMSprop(discriminator.parameters(), lr=1e-4)
     )
 
     epoch_trainer = WganEpochTrainer(n_critic=5, batch_size=100)
@@ -126,7 +126,7 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
 
 def run() -> GAN:
     model_name = 'physics_test_3d'
-    gan_trainer, epoch_trainer = form_gan_trainer(model_name=model_name, n_epochs=15)
+    gan_trainer, epoch_trainer = form_gan_trainer(model_name=model_name, n_epochs=30)
     gan = None
     for epoch, gan in gan_trainer:
         pass
