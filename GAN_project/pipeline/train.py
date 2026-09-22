@@ -104,9 +104,6 @@ def _layer_profile_loss(real_layer, fake_layer, eps=1e-8):
 ## диагностическая функция, которая возвращает потери по каждой части FHCal отдельно
 def layer_fraction_losses(real_x, fake_x, eps=1e-8):
 
-    real_x = torch.expm1(real_x)
-    fake_x = torch.expm1(fake_x)
-
     real_center = real_x[:, :7, :, 2:7].sum(dim=(2, 3))
     fake_center = fake_x[:, :7, :, 2:7].sum(dim=(2, 3))
 
@@ -139,8 +136,6 @@ def layer_fraction_losses(real_x, fake_x, eps=1e-8):
 
 
 def layer_fraction_loss(real_x, fake_x):
-    real_x = torch.expm1(real_x)
-    fake_x = torch.expm1(fake_x)
 
     # -------------------------
     # CENTER
@@ -249,15 +244,10 @@ def quantile_energy_loss(
 
     quantiles = torch.tensor(
         [
-        0.20,
-        0.30,
-        0.40,
         0.50,
-        0.60,
-        0.70,
-        0.80,
         0.90,
         0.95,
+        0.975,
         0.99,
         ],
         device=fake_x.device,
@@ -269,16 +259,11 @@ def quantile_energy_loss(
     # тем больше его значение для loss
     weights = torch.tensor(
         [
-            1.0,
-            1.0,
-            1.0,
-            1.0,
-            1.0,
-            1.0,
-            1.0,
-            2.0,
-            3.0,
-            4.0,
+        0.5,
+        1.0,
+        2.0,
+        3.0,
+        4.0,
         ],
         device=fake_x.device,
         dtype=fake_x.dtype,
@@ -531,68 +516,31 @@ class WganEpochTrainer(GanEpochTrainer):
 
             adv_gen_loss = observations.mean()
 
-            fake_energy = torch.log1p(
-                torch.expm1(gen_batch_x).sum(
-                    dim=tuple(
-                        range(1, gen_batch_x.ndim)
+            fake_energy = gen_batch_x.sum(
+                dim=tuple(
+                    range(
+                        1,
+                        gen_batch_x.ndim
                     )
-                ) 
+                )
             )
             
-            real_energy = torch.log1p(
-                torch.expm1(real_batch_x).sum(
-                    dim=tuple(
-                        range(1, real_batch_x.ndim)
+            real_energy = real_batch_x.sum(
+                dim=tuple(
+                    range(
+                        1,
+                        real_batch_x.ndim
                     )
-                ) 
-            ).detach()
-            
-            
-        
-            real_mean = real_energy.mean()
-            fake_mean = fake_energy.mean()
-
-            real_q25 = torch.quantile(
-                real_energy.detach(),
-                0.25
+                )
             )
             
-            real_median = torch.quantile(
-                real_energy.detach(),
-                0.50
+            energy_loss = torch.mean(
+                (
+                    fake_energy
+                    - real_energy
+                ) ** 2
             )
             
-            real_q75 = torch.quantile(
-                real_energy.detach(),
-                0.75
-            )
-            
-            
-            fake_q25 = torch.quantile(
-                fake_energy,
-                0.25
-            )
-            
-            fake_median = torch.quantile(
-                fake_energy,
-                0.50
-            )
-            
-            fake_q75 = torch.quantile(
-                fake_energy,
-                0.75
-            )
-            
-            
-            real_iqr = real_q75 - real_q25
-            fake_iqr = fake_q75 - fake_q25
-            
-            
-            energy_loss = (
-                (fake_median - real_median) ** 2
-                +
-                (fake_iqr - real_iqr) ** 2
-            )
 
             sparsity_loss = gen_batch_x.abs().mean()
             layer_frac_loss = layer_fraction_loss(real_batch_x, gen_batch_x)
