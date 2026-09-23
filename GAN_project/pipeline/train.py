@@ -76,9 +76,6 @@ def check_tensor(x: torch.Tensor, prefix: str = ''):
 
 def _layer_profile_loss(real_layer, fake_layer, eps=1e-8):
 
-    real_x = torch.expm1(real_x)
-    fake_x = torch.expm1(fake_x)
-
     real_total = real_layer.sum(dim=1, keepdim=True)
     fake_total = fake_layer.sum(dim=1, keepdim=True)
 
@@ -147,7 +144,9 @@ def layer_fraction_loss(real_x, fake_x):
     # столбцы 2..6
     # только первые 7 слоев
     # -------------------------
-
+    real_x = torch.expm1(real_x)
+    fake_x = torch.expm1(fake_x)
+    
     real_center = real_x[
         :, :7, :, 2:7
     ].sum(dim=(2, 3))
