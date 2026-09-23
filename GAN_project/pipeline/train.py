@@ -76,6 +76,7 @@ def check_tensor(x: torch.Tensor, prefix: str = ''):
 
 def _layer_profile_loss(real_layer, fake_layer, eps=1e-8):
 
+
     real_total = real_layer.sum(dim=1, keepdim=True)
     fake_total = fake_layer.sum(dim=1, keepdim=True)
 
@@ -102,18 +103,20 @@ def _layer_profile_loss(real_layer, fake_layer, eps=1e-8):
 
 ## диагностическая функция, которая возвращает потери по каждой части FHCal отдельно
 def layer_fraction_losses(real_x, fake_x, eps=1e-8):
-    
-    real_x = torch.expm1(real_x)
-    fake_x = torch.expm1(fake_x)
 
-    real_center = real_x[:, :7, :, 2:7].sum(dim=(2, 3))
-    fake_center = fake_x[:, :7, :, 2:7].sum(dim=(2, 3))
+    # real_x and fake_x are stored in log1p(E).
+    # Layer fractions must be calculated from physical energy.
+    real_energy = torch.expm1(real_x).clamp_min(0.0)
+    fake_energy = torch.expm1(fake_x).clamp_min(0.0)
 
-    real_left = real_x[:, :, :, 0:2].sum(dim=(2, 3))
-    fake_left = fake_x[:, :, :, 0:2].sum(dim=(2, 3))
+    real_center = real_energy[:, :7, :, 2:7].sum(dim=(2, 3))
+    fake_center = fake_energy[:, :7, :, 2:7].sum(dim=(2, 3))
 
-    real_right = real_x[:, :, :, 7:9].sum(dim=(2, 3))
-    fake_right = fake_x[:, :, :, 7:9].sum(dim=(2, 3))
+    real_left = real_energy[:, :, :, 0:2].sum(dim=(2, 3))
+    fake_left = fake_energy[:, :, :, 0:2].sum(dim=(2, 3))
+
+    real_right = real_energy[:, :, :, 7:9].sum(dim=(2, 3))
+    fake_right = fake_energy[:, :, :, 7:9].sum(dim=(2, 3))
 
     center_loss = _layer_profile_loss(
         real_center,
@@ -137,69 +140,12 @@ def layer_fraction_losses(real_x, fake_x, eps=1e-8):
 
 
 
-def layer_fraction_loss(real_x, fake_x):
-
-    # -------------------------
-    # CENTER
-    # столбцы 2..6
-    # только первые 7 слоев
-    # -------------------------
-    real_x = torch.expm1(real_x)
-    fake_x = torch.expm1(fake_x)
-    
-    real_center = real_x[
-        :, :7, :, 2:7
-    ].sum(dim=(2, 3))
-
-    fake_center = fake_x[
-        :, :7, :, 2:7
-    ].sum(dim=(2, 3))
-
-    center_loss = _layer_profile_loss(
-        real_center,
-        fake_center
+def layer_fraction_loss(real_x, fake_x, eps=1e-8):
+    center_loss, left_loss, right_loss = layer_fraction_losses(
+        real_x,
+        fake_x,
+        eps,
     )
-
-
-    # -------------------------
-    # LEFT
-    # столбцы 0..1
-    # все 10 слоев
-    # -------------------------
-
-    real_left = real_x[
-        :, :, :, 0:2
-    ].sum(dim=(2, 3))
-
-    fake_left = fake_x[
-        :, :, :, 0:2
-    ].sum(dim=(2, 3))
-
-    left_loss = _layer_profile_loss(
-        real_left,
-        fake_left
-    )
-
-
-    # -------------------------
-    # RIGHT
-    # столбцы 7..8
-    # все 10 слоев
-    # -------------------------
-
-    real_right = real_x[
-        :, :, :, 7:9
-    ].sum(dim=(2, 3))
-
-    fake_right = fake_x[
-        :, :, :, 7:9
-    ].sum(dim=(2, 3))
-
-    right_loss = _layer_profile_loss(
-        real_right,
-        fake_right
-    )
-
 
     return (
         center_loss
@@ -279,11 +225,11 @@ def quantile_energy_loss(
             3.0,   # q30 — центр левого пика
             2.5,   # q35
             2.0,   # q40 — впадина между пиками
-            1.0,   # q50 — медиана уже совпадает
-            1.0,   # q75 — промежуточная область
-            2.0,   # q90 — начало правого хвоста
-            3.0,   # q95
-            4.0,   # q97 — край правого хвоста
+            2.0,   # q50 — медиана уже совпадает
+            2.0,   # q75 — промежуточная область
+            3.0,   # q90 — начало правого хвоста
+            5.0,   # q95
+            7.0,   # q97 — край правого хвоста
         ],
         device=fake_x.device,
         dtype=fake_x.dtype,
@@ -563,11 +509,20 @@ class WganEpochTrainer(GanEpochTrainer):
             
 
             sparsity_loss = gen_batch_x.abs().mean()
-            layer_frac_loss = layer_fraction_loss(real_batch_x, gen_batch_x)
-            quantile_loss = quantile_energy_loss(real_batch_x, gen_batch_x)
             center_loss, left_loss, right_loss = layer_fraction_losses(
-            real_batch_x,
-            gen_batch_x
+                real_batch_x,
+                gen_batch_x,
+            )
+
+            layer_frac_loss = (
+                center_loss
+                + left_loss
+                + right_loss
+            ) / 3.0
+
+            quantile_loss = quantile_energy_loss(
+                real_batch_x,
+                gen_batch_x,
             )
             gen_center_fraction_loss_total += center_loss.item() * len(gen_batch_x)
             gen_left_fraction_loss_total += left_loss.item() * len(gen_batch_x)
