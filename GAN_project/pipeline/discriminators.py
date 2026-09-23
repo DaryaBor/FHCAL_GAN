@@ -159,6 +159,7 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
         # =====================================================
         # Fully connected
         #
+        # +10 = log_layer_energy for ten longitudinal layers
         # +1 = log_total_energy
         # =====================================================
 
@@ -166,6 +167,7 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
             nn.Linear(
                 256
                 + condition_dim
+                + 10
                 + 1,
                 64,
             )
@@ -199,37 +201,7 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
             )
 
         # =====================================================
-        # 1. ENERGY-AWARE FEATURE
-        # =====================================================
-
-        # EnergyDeposit сейчас в log1p(E)
-        physical_energy = torch.expm1(
-            EnergyDeposit
-        )
-
-        # Суммируем всё кроме batch dimension
-        energy_dims = tuple(
-            range(
-                1,
-                physical_energy.ndim
-            )
-        )
-
-        total_energy = physical_energy.sum(
-            dim=energy_dims
-        )
-
-        # Используем log-шкалу для стабильности
-        log_total_energy = torch.log1p(
-            total_energy
-        ).unsqueeze(1)
-
-        # log_total_energy:
-        # (B, 1)
-
-
-        # =====================================================
-        # 2. ПОДГОТОВКА ВХОДА ДЛЯ Conv3D
+        # 1. ПОДГОТОВКА ВХОДА ДЛЯ Conv3D
         # =====================================================
 
         if EnergyDeposit.ndim == 4:
@@ -245,6 +217,7 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
                     f"{tuple(EnergyDeposit.shape)}"
                 )
 
+            energy_map = EnergyDeposit
             X = EnergyDeposit.unsqueeze(1)
 
         elif EnergyDeposit.ndim == 5:
@@ -260,6 +233,7 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
                     f"{tuple(EnergyDeposit.shape)}"
                 )
 
+            energy_map = EnergyDeposit[:, 0]
             X = EnergyDeposit
 
         else:
@@ -272,6 +246,50 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
                 f"получена "
                 f"{tuple(EnergyDeposit.shape)}"
             )
+
+
+        # =====================================================
+        # 2. ENERGY-AWARE FEATURES
+        # =====================================================
+
+        # energy_map has shape (B, 10, 7, 9) and contains
+        # log1p(E). Layer sums must be calculated in physical
+        # energy, not by summing logarithms.
+        physical_energy = torch.expm1(
+            energy_map
+        ).clamp_min(0.0)
+
+        # Sum over detector rows and columns:
+        # (B, 10, 7, 9) -> (B, 10)
+        layer_energy = physical_energy.sum(
+            dim=(2, 3)
+        )
+
+        # Sum over the ten longitudinal layers:
+        # (B, 10) -> (B, 1)
+        total_energy = layer_energy.sum(
+            dim=1,
+            keepdim=True,
+        )
+
+        # Log scaling prevents the energy features from
+        # dominating the learned convolutional features.
+        log_layer_energy = torch.log1p(
+            layer_energy
+        )
+
+        log_total_energy = torch.log1p(
+            total_energy
+        )
+
+        # (B, 10) + (B, 1) -> (B, 11)
+        energy_features = torch.cat(
+            [
+                log_layer_energy,
+                log_total_energy,
+            ],
+            dim=1,
+        )
 
 
         # =====================================================
@@ -334,7 +352,7 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
             [
                 X,
                 condition,
-                log_total_energy,
+                energy_features,
             ],
             dim=1,
         )
