@@ -3,6 +3,7 @@ This file is expecting the 'pipeline' package name to be defined
 This file completely defines the experiment to run
 """
 import os
+from random import random
 from typing import Tuple, Generator, Optional, Dict, List
 
 import numpy as np
@@ -152,6 +153,16 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
 
 
 def run() -> GAN:
+    seed = 42
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
     model_name = 'physics_test_enerqy_aware'
     gan_trainer, epoch_trainer = form_gan_trainer(model_name=model_name, n_epochs=15)
     gan = None
