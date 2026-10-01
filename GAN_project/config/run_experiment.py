@@ -59,7 +59,7 @@ def form_result_metrics() -> Metric:
 
 
 def form_dataset(train: bool = False) -> torch.utils.data.Dataset:
-    data_filepath = global_config.paths.data_dir_path + '/fhcal_data_side_modules81619.npz'
+    data_filepath = global_config.paths.data_dir_path + '/fhcal_data_side_modules81619_180.npz'
 
     assert os.path.exists(data_filepath), (
         f'Dataset not found: {data_filepath}'
@@ -153,16 +153,6 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
 
 
 def run() -> GAN:
-    seed = 42
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
     model_name = 'physics_test_enerqy_aware'
     gan_trainer, epoch_trainer = form_gan_trainer(model_name=model_name, n_epochs=15)
     gan = None
