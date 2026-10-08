@@ -23,14 +23,24 @@ y - либо число, либо тензор, либо tuple с числами
 class RandomDataloader(torch.utils.data.DataLoader):
     def __init__(self, dataset: torch.utils.data.Dataset, batch_size: int, *args, **kwargs):
         sampler = torch.utils.data.sampler.RandomSampler(dataset, replacement=True)
-        random_sampler = torch.utils.data.sampler.BatchSampler(sampler, batch_size=batch_size,
-                                                               drop_last=False)
+        random_sampler = torch.utils.data.sampler.BatchSampler(sampler,batch_size=batch_size, drop_last=True)
 
         super().__init__(dataset, batch_sampler=random_sampler, *args, **kwargs)
 
 
-def get_random_infinite_dataloader(dataset: torch.utils.data.Dataset, batch_size: int, *args, **kwargs):
-    return cycle(RandomDataloader(dataset, batch_size=batch_size, *args, **kwargs))
+def get_random_infinite_dataloader(
+    dataset,
+    batch_size,
+    *args,
+    **kwargs
+):
+    while True:
+        yield from RandomDataloader(
+            dataset,
+            batch_size=batch_size,
+            *args,
+            **kwargs
+        )
 
 
 def collate_fn(els_list: Sequence[Union[Tuple, int, torch.Tensor]]):
