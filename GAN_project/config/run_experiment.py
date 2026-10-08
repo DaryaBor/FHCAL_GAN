@@ -59,13 +59,13 @@ def form_result_metrics() -> Metric:
 
 
 def form_dataset(train: bool = False) -> torch.utils.data.Dataset:
-    data_filepath = global_config.paths.data_dir_path + '/fhcal_data_side_modules81619_180.npz'
+    data_filepath = global_config.paths.data_dir_path + '/fhcal_data_density.npz'
 
     assert os.path.exists(data_filepath), (
         f'Dataset not found: {data_filepath}'
     )
 
-    return data.UnifiedDatasetWrapper(data.get_physics_dataset(data_filepath, train=train))
+    return data.UnifiedDatasetWrapper(data.get_physics_dataset(data_filepath, train=train,val_ratio=0.1,log1p_energy=True))
 
 
 def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs: int = 100) -> Generator[Tuple[int, GAN], None, GAN]:
@@ -73,8 +73,8 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
     :return: a generator that yields (epoch number, gan_model after this epoch)
     """
     logger_cm_fn = init_logger(model_name)
-    metric = form_metric()
-    metric_predicate = form_metric_predicate()
+    metric = None
+    metric_predicate = None
 
     train_dataset = form_dataset(train=True)
     val_dataset = form_dataset(train=False)
@@ -87,20 +87,9 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
 
     def uniform_noise_generator(n: int) -> torch.Tensor:
         return 2*torch.rand(size=(n, noise_dimension)) - 1  # шум с распределением [-1, 1]
-
-    module_mask = torch.tensor([
-        [1, 1, 1, 1, 1, 1, 1, 1, 1],
-        [1, 1, 1, 1, 1, 1, 1, 1, 1],
-        [0, 0, 1, 1, 1, 1, 1, 0, 0],
-        [1, 1, 1, 1, 0, 1, 1, 1, 1],
-        [0, 0, 1, 1, 1, 1, 1, 0, 0],
-        [1, 1, 1, 1, 1, 1, 1, 1, 1],
-        [1, 1, 1, 1, 1, 1, 1, 1, 1],
-    ], dtype=torch.float32)
-
+        
     generator = CaloganPhysicsGenerator3D(
-        noise_dim=noise_dimension,
-        module_mask=module_mask,
+        noise_dim=noise_dimension
     )
     discriminator = CaloganPhysicsDiscriminator3D()
     # discriminator = apply_normalization(discriminator, MultiplyOutputNormalizer, coef=2., is_trainable_coef=False)
@@ -153,7 +142,7 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
 
 
 def run() -> GAN:
-    model_name = 'physics_test_enerqy_aware'
+    model_name = 'physics_multichannel'
     gan_trainer, epoch_trainer = form_gan_trainer(model_name=model_name, n_epochs=15)
     gan = None
     for epoch, gan in gan_trainer:
