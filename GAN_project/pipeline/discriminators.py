@@ -86,8 +86,8 @@ class CaloganPhysicsDiscriminator(Discriminator):
         return self.fc3(X)
 
 
-## класс с 3d сверткой
-class CaloganPhysicsDiscriminator3D(Discriminator):
+## класс с многоканальной архитектурой
+class CaloganPhysicsDiscriminator3D(nn.Module):
 
     def __init__(
         self,
@@ -102,238 +102,197 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
             add_points_norms_and_angles
         )
 
-        # =====================================================
-        # Conv3D
-        # =====================================================
-
-        self.conv1 = spectral_norm(
-            nn.Conv3d(
-                in_channels=1,
-                out_channels=32,
-                kernel_size=3,
-                stride=1,
-                padding=1,
-            )
+        self.condition_dim = (
+            7 if add_points_norms_and_angles else 5
         )
 
-        self.conv2 = spectral_norm(
-            nn.Conv3d(
-                in_channels=32,
-                out_channels=64,
-                kernel_size=3,
-                stride=(1, 2, 2),
-                padding=1,
-            )
+        self.height = 11
+        self.width = 9
+
+        central_mask = torch.tensor([
+            [0,0,1,1,1,1,1,0,0],
+            [0,0,0,0,0,0,0,0,0],
+            [0,0,1,1,1,1,1,0,0],
+            [0,0,0,0,0,0,0,0,0],
+            [0,0,1,1,1,1,1,0,0],
+            [0,0,1,1,0,1,1,0,0],
+            [0,0,1,1,1,1,1,0,0],
+            [0,0,0,0,0,0,0,0,0],
+            [0,0,1,1,1,1,1,0,0],
+            [0,0,0,0,0,0,0,0,0],
+            [0,0,1,1,1,1,1,0,0],
+        ], dtype=torch.float32)
+
+        side_mask = torch.tensor([
+            [0,0,0,0,0,0,0,0,0],
+            [1,1,0,0,0,0,0,1,1],
+            [0,0,0,0,0,0,0,0,0],
+            [1,1,0,0,0,0,0,1,1],
+            [0,0,0,0,0,0,0,0,0],
+            [1,1,0,0,0,0,0,1,1],
+            [0,0,0,0,0,0,0,0,0],
+            [1,1,0,0,0,0,0,1,1],
+            [0,0,0,0,0,0,0,0,0],
+            [1,1,0,0,0,0,0,1,1],
+            [0,0,0,0,0,0,0,0,0],
+        ], dtype=torch.float32)
+
+        x_coords = [
+            -67.5, -47.5,
+            -30.0, -15.0, 0.0, 15.0, 30.0,
+            47.5, 67.5,
+        ]
+
+        y_coords = [
+            45.0,
+            40.0,
+            30.0,
+            20.0,
+            15.0,
+            0.0,
+            -15.0,
+            -20.0,
+            -30.0,
+            -40.0,
+            -45.0,
+        ]
+
+        coord_X = torch.zeros(
+            self.height,
+            self.width,
+            dtype=torch.float32,
         )
 
-        self.conv3 = spectral_norm(
-            nn.Conv3d(
-                in_channels=64,
-                out_channels=128,
-                kernel_size=3,
-                stride=1,
-                padding=1,
-            )
+        coord_Y = torch.zeros(
+            self.height,
+            self.width,
+            dtype=torch.float32,
         )
 
-        self.conv4 = spectral_norm(
-            nn.Conv3d(
-                in_channels=128,
-                out_channels=256,
-                kernel_size=3,
-                stride=1,
-                padding=1,
-            )
+        module_mask = (
+            central_mask + side_mask
         )
 
-        self.adaptive_pool = nn.AdaptiveAvgPool3d(
-            (1, 1, 1)
+        for row, y in enumerate(y_coords):
+            for col, x in enumerate(x_coords):
+                if module_mask[row, col] > 0:
+                    coord_X[row, col] = x
+                    coord_Y[row, col] = y
+
+        central_square = (
+            central_mask * 225.0
         )
 
-        condition_dim = (
-            7
-            if add_points_norms_and_angles
-            else 5
+        side_square = (
+            side_mask * 400.0
         )
 
-        # =====================================================
-        # Fully connected
-        #
-        # +10 = log_layer_energy for ten longitudinal layers
-        # +1 = log_total_energy
-        # =====================================================
-
-        self.fc1 = spectral_norm(
-            nn.Linear(
-                256
-                + condition_dim
-                + 10
-                + 1,
-                64,
-            )
+        central_depth = (
+            central_mask * 7.0
         )
 
-        self.fc2 = spectral_norm(
-            nn.Linear(
-                64,
-                32,
-            )
+        side_depth = (
+            side_mask * 10.0
         )
 
-        self.fc3 = spectral_norm(
-            nn.Linear(
-                32,
-                1,
-            )
+        self.register_buffer(
+            "central_mask",
+            central_mask.unsqueeze(0).unsqueeze(0),
         )
 
-    def forward(
+        self.register_buffer(
+            "side_mask",
+            side_mask.unsqueeze(0).unsqueeze(0),
+        )
+
+        self.register_buffer(
+            "central_square",
+            central_square.unsqueeze(0).unsqueeze(0),
+        )
+
+        self.register_buffer(
+            "side_square",
+            side_square.unsqueeze(0).unsqueeze(0),
+        )
+
+        self.register_buffer(
+            "central_depth",
+            central_depth.unsqueeze(0).unsqueeze(0),
+        )
+
+        self.register_buffer(
+            "side_depth",
+            side_depth.unsqueeze(0).unsqueeze(0),
+        )
+
+        self.register_buffer(
+            "coord_X",
+            coord_X.unsqueeze(0).unsqueeze(0),
+        )
+
+        self.register_buffer(
+            "coord_Y",
+            coord_Y.unsqueeze(0).unsqueeze(0),
+        )
+
+        self.conv1 = nn.Conv2d(
+            in_channels=18,
+            out_channels=32,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+        )
+
+        self.conv2 = nn.Conv2d(
+            in_channels=32,
+            out_channels=64,
+            kernel_size=3,
+            stride=2,
+            padding=1,
+        )
+
+        self.conv3 = nn.Conv2d(
+            in_channels=64,
+            out_channels=128,
+            kernel_size=3,
+            stride=2,
+            padding=1,
+        )
+
+        self.conv4 = nn.Conv2d(
+            in_channels=128,
+            out_channels=128,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+        )
+
+        self.pool = nn.AdaptiveAvgPool2d(
+            (1, 1)
+        )
+
+        self.fc1 = nn.Linear(
+            128
+            + self.condition_dim
+            + 11,
+            128,
+        )
+
+        self.fc2 = nn.Linear(
+            128,
+            1,
+        )
+
+    def _prepare_condition(
         self,
-        EnergyDeposit: torch.Tensor,
         y,
-    ) -> torch.Tensor:
-
+    ):
         point, momentum = y
 
         if self.add_points_norms_and_angles:
             point = aux.add_angle_and_norm(
                 point
             )
-
-        # =====================================================
-        # 1. ПОДГОТОВКА ВХОДА ДЛЯ Conv3D
-        # =====================================================
-
-        if EnergyDeposit.ndim == 4:
-
-            if tuple(
-                EnergyDeposit.shape[1:]
-            ) != (10, 7, 9):
-
-                raise ValueError(
-                    "Ожидалась геометрия "
-                    "(batch, 10, 7, 9), "
-                    f"получена "
-                    f"{tuple(EnergyDeposit.shape)}"
-                )
-
-            energy_map = EnergyDeposit
-            X = EnergyDeposit.unsqueeze(1)
-
-        elif EnergyDeposit.ndim == 5:
-
-            if tuple(
-                EnergyDeposit.shape[1:]
-            ) != (1, 10, 7, 9):
-
-                raise ValueError(
-                    "Ожидалась геометрия "
-                    "(batch, 1, 10, 7, 9), "
-                    f"получена "
-                    f"{tuple(EnergyDeposit.shape)}"
-                )
-
-            energy_map = EnergyDeposit[:, 0]
-            X = EnergyDeposit
-
-        else:
-
-            raise ValueError(
-                "Ожидалась форма "
-                "(batch, 10, 7, 9) "
-                "или "
-                "(batch, 1, 10, 7, 9), "
-                f"получена "
-                f"{tuple(EnergyDeposit.shape)}"
-            )
-
-
-        # =====================================================
-        # 2. ENERGY-AWARE FEATURES
-        # =====================================================
-
-        # energy_map has shape (B, 10, 7, 9) and contains
-        # log1p(E). Layer sums must be calculated in physical
-        # energy, not by summing logarithms.
-        physical_energy = torch.expm1(
-            energy_map
-        ).clamp_min(0.0)
-
-        # Sum over detector rows and columns:
-        # (B, 10, 7, 9) -> (B, 10)
-        layer_energy = physical_energy.sum(
-            dim=(2, 3)
-        )
-
-        # Sum over the ten longitudinal layers:
-        # (B, 10) -> (B, 1)
-        total_energy = layer_energy.sum(
-            dim=1,
-            keepdim=True,
-        )
-
-        # Log scaling prevents the energy features from
-        # dominating the learned convolutional features.
-        log_layer_energy = torch.log1p(
-            layer_energy
-        )
-
-        log_total_energy = torch.log1p(
-            total_energy
-        )
-
-        # (B, 10) + (B, 1) -> (B, 11)
-        energy_features = torch.cat(
-            [
-                log_layer_energy,
-                log_total_energy,
-            ],
-            dim=1,
-        )
-
-
-        # =====================================================
-        # 3. Conv3D
-        # =====================================================
-
-        X = F.leaky_relu(
-            self.conv1(X),
-            negative_slope=0.2,
-        )
-
-        X = F.leaky_relu(
-            self.conv2(X),
-            negative_slope=0.2,
-        )
-
-        X = F.leaky_relu(
-            self.conv3(X),
-            negative_slope=0.2,
-        )
-
-        X = F.leaky_relu(
-            self.conv4(X),
-            negative_slope=0.2,
-        )
-
-
-        # =====================================================
-        # 4. Global pooling
-        # =====================================================
-
-        X = self.adaptive_pool(X)
-
-        X = X.flatten(
-            start_dim=1
-        )
-
-        # X:
-        # (B, 256)
-
-
-        # =====================================================
-        # 5. CONDITIONS
-        # =====================================================
 
         condition = torch.cat(
             [
@@ -343,33 +302,130 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
             dim=1,
         )
 
+        return condition
 
-        # =====================================================
-        # 6. ENERGY-AWARE CONCATENATION
-        # =====================================================
+    def forward(
+        self,
+        energy_map,
+        y,
+    ):
 
-        X = torch.cat(
+        condition = self._prepare_condition(y)
+
+        batch_size = energy_map.size(0)
+
+        central_mask = self.central_mask.expand(
+            batch_size, -1, -1, -1
+        )
+
+        side_mask = self.side_mask.expand(
+            batch_size, -1, -1, -1
+        )
+
+        central_square = self.central_square.expand(
+            batch_size, -1, -1, -1
+        )
+
+        side_square = self.side_square.expand(
+            batch_size, -1, -1, -1
+        )
+
+        central_depth = self.central_depth.expand(
+            batch_size, -1, -1, -1
+        )
+
+        side_depth = self.side_depth.expand(
+            batch_size, -1, -1, -1
+        )
+
+        coord_X = self.coord_X.expand(
+            batch_size, -1, -1, -1
+        )
+
+        coord_Y = self.coord_Y.expand(
+            batch_size, -1, -1, -1
+        )
+
+        x = torch.cat(
             [
-                X,
+                energy_map,
+                central_mask,
+                side_mask,
+                central_square,
+                side_square,
+                central_depth,
+                side_depth,
+                coord_X,
+                coord_Y,
+            ],
+            dim=1,
+        )
+
+        x = self.conv1(x)
+        x = self.activation(x)
+
+        x = self.conv2(x)
+        x = self.activation(x)
+
+        x = self.conv3(x)
+        x = self.activation(x)
+
+        x = self.conv4(x)
+        x = self.activation(x)
+
+        x = self.pool(x)
+        x = x.flatten(1)
+
+        density = torch.expm1(
+            energy_map
+        ).clamp_min(0.0)
+
+        area = (
+            self.central_square
+            + self.side_square
+        )
+
+        physical_energy = (
+            density * area
+        )
+
+        layer_energy = physical_energy.sum(
+            dim=(2, 3)
+        )
+
+        total_energy = layer_energy.sum(
+            dim=1,
+            keepdim=True,
+        )
+
+        log_layer_energy = torch.log1p(
+            layer_energy
+        )
+
+        log_total_energy = torch.log1p(
+            total_energy
+        )
+
+        energy_features = torch.cat(
+            [
+                log_layer_energy,
+                log_total_energy,
+            ],
+            dim=1,
+        )
+
+        x = torch.cat(
+            [
+                x,
                 condition,
                 energy_features,
             ],
             dim=1,
         )
 
+        x = self.fc1(x)
+        x = self.activation(x)
 
-        # =====================================================
-        # 7. Critic output
-        # =====================================================
+        x = self.fc2(x)
 
-        X = F.leaky_relu(
-            self.fc1(X),
-            negative_slope=0.2,
-        )
-
-        X = F.leaky_relu(
-            self.fc2(X),
-            negative_slope=0.2,
-        )
-
-        return self.fc3(X)
+        return x
