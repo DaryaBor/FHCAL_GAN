@@ -562,7 +562,9 @@ class WganEpochTrainer(GanEpochTrainer):
 
             collate_fn=collate_fn,
 
-            shuffle=True
+            shuffle=True,
+
+            drop_last=True
 
         )
 
