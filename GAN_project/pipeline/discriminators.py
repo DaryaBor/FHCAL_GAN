@@ -235,52 +235,57 @@ class CaloganPhysicsDiscriminator3D(nn.Module):
             coord_Y.unsqueeze(0).unsqueeze(0),
         )
 
-        self.conv1 = nn.Conv2d(
-            in_channels=18,
-            out_channels=32,
-            kernel_size=3,
-            stride=1,
-            padding=1,
+        self.conv1 = spectral_norm(
+            nn.Conv2d(
+                in_channels=18,
+                out_channels=32,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+            )
         )
-
-        self.conv2 = nn.Conv2d(
-            in_channels=32,
-            out_channels=64,
-            kernel_size=3,
-            stride=2,
-            padding=1,
+        
+        self.conv2 = spectral_norm(
+            nn.Conv2d(
+                in_channels=32,
+                out_channels=64,
+                kernel_size=3,
+                stride=2,
+                padding=1,
+            )
         )
-
-        self.conv3 = nn.Conv2d(
-            in_channels=64,
-            out_channels=128,
-            kernel_size=3,
-            stride=2,
-            padding=1,
+        
+        self.conv3 = spectral_norm(
+            nn.Conv2d(
+                in_channels=64,
+                out_channels=128,
+                kernel_size=3,
+                stride=2,
+                padding=1,
+            )
         )
-
-        self.conv4 = nn.Conv2d(
-            in_channels=128,
-            out_channels=128,
-            kernel_size=3,
-            stride=1,
-            padding=1,
+        
+        self.conv4 = spectral_norm(
+            nn.Conv2d(
+                in_channels=128,
+                out_channels=128,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+            )
         )
-
-        self.pool = nn.AdaptiveAvgPool2d(
-            (1, 1)
+        
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        
+        self.fc1 = spectral_norm(
+            nn.Linear(
+                128 + self.condition_dim + 11,
+                128,
+            )
         )
-
-        self.fc1 = nn.Linear(
-            128
-            + self.condition_dim
-            + 11,
-            128,
-        )
-
-        self.fc2 = nn.Linear(
-            128,
-            1,
+        
+        self.fc2 = spectral_norm(
+            nn.Linear(128, 1)
         )
 
     def _prepare_condition(
@@ -351,12 +356,12 @@ class CaloganPhysicsDiscriminator3D(nn.Module):
                 energy_map,
                 central_mask,
                 side_mask,
-                central_square,
-                side_square,
-                central_depth,
-                side_depth,
-                coord_X,
-                coord_Y,
+                central_square / 400.0,
+                side_square / 400.0,
+                central_depth / 10.0,
+                side_depth / 10.0,
+                coord_X / 67.5,
+                coord_Y / 45.0,
             ],
             dim=1,
         )
