@@ -582,12 +582,12 @@ class CaloganPhysicsGenerator3D(nn.Module):
                 x,
                 central_mask,
                 side_mask,
-                central_square,
-                side_square,
-                central_depth,
-                side_depth,
-                coord_X,
-                coord_Y,
+                central_square / 400.0,
+                side_square / 400.0,
+                central_depth / 10.0,
+                side_depth / 10.0,
+                coord_X / 67.5,
+                coord_Y / 45.0,
             ],
             dim=1,
         )
@@ -599,13 +599,13 @@ class CaloganPhysicsGenerator3D(nn.Module):
 
         x = self.central_conv2(x)
         x = self.activation(x)
-
-        density= self.energy_out(x)
-
-    
-
-        central_density = density[:, :7]
-        side_density = density[:, 7:]
+        
+        density = F.relu(self.energy_out(x))
+        
+        log_density = torch.log1p(density)
+        
+        central_density = log_density[:, :7]
+        side_density = log_density[:, 7:]
 
   
         central_density = (
