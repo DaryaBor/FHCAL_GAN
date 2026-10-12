@@ -600,7 +600,7 @@ class CaloganPhysicsGenerator3D(nn.Module):
         x = self.central_conv2(x)
         x = self.activation(x)
         
-        density = F.relu(self.energy_out(x))
+        density = F.softplus(self.energy_out(x))
         
         log_density = torch.log1p(density)
         
