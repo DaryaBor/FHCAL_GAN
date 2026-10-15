@@ -128,7 +128,7 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
     )
 
     model_dir = experiments_storage.get_model_dir(model_name)
-    trainer = GanTrainer(model_dir=model_dir, use_saved_checkpoint=True, save_checkpoint_once_in_epoch=5)
+    trainer = GanTrainer(model_dir=model_dir, use_saved_checkpoint=False, save_checkpoint_once_in_epoch=5)
     train_gan_generator = trainer.train(gan_model=gan_model,
                                         train_dataset=train_dataset, val_dataset=val_dataset,
                                         generator_stepper=generator_stepper,
