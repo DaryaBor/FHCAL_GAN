@@ -59,7 +59,7 @@ def form_result_metrics() -> Metric:
 
 
 def form_dataset(train: bool = False) -> torch.utils.data.Dataset:
-    data_filepath = global_config.paths.data_dir_path + '/fhcal_data_side_modules81619_180.npz'
+    data_filepath = global_config.paths.data_dir_path + '/fhcal_data_side_modules81619.npz'
 
     assert os.path.exists(data_filepath), (
         f'Dataset not found: {data_filepath}'
