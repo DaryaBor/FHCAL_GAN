@@ -87,6 +87,7 @@ class CaloganPhysicsDiscriminator(Discriminator):
 
 
 ## класс с многоканальной архитектурой
+
 class CaloganPhysicsDiscriminator3D(nn.Module):
 
     def __init__(
@@ -97,176 +98,180 @@ class CaloganPhysicsDiscriminator3D(nn.Module):
         super().__init__()
 
         self.activation = act_func
-
-        self.add_points_norms_and_angles = (
-            add_points_norms_and_angles
-        )
+        self.add_points_norms_and_angles = add_points_norms_and_angles
 
         self.condition_dim = (
             7 if add_points_norms_and_angles else 5
         )
 
+        self.depth = 10
         self.height = 11
         self.width = 9
 
+        # =====================================================
+        # 1. ГЕОМЕТРИЯ FHCAL
+        # =====================================================
+
         central_mask = torch.tensor([
-            [0,0,1,1,1,1,1,0,0],
-            [0,0,0,0,0,0,0,0,0],
-            [0,0,1,1,1,1,1,0,0],
-            [0,0,0,0,0,0,0,0,0],
-            [0,0,1,1,1,1,1,0,0],
-            [0,0,1,1,0,1,1,0,0],
-            [0,0,1,1,1,1,1,0,0],
-            [0,0,0,0,0,0,0,0,0],
-            [0,0,1,1,1,1,1,0,0],
-            [0,0,0,0,0,0,0,0,0],
-            [0,0,1,1,1,1,1,0,0],
+            [0, 0, 1, 1, 1, 1, 1, 0, 0],  #  45
+            [0, 0, 0, 0, 0, 0, 0, 0, 0],  #  40
+            [0, 0, 1, 1, 1, 1, 1, 0, 0],  #  30
+            [0, 0, 0, 0, 0, 0, 0, 0, 0],  #  20
+            [0, 0, 1, 1, 1, 1, 1, 0, 0],  #  15
+            [0, 0, 1, 1, 0, 1, 1, 0, 0],  #   0
+            [0, 0, 1, 1, 1, 1, 1, 0, 0],  # -15
+            [0, 0, 0, 0, 0, 0, 0, 0, 0],  # -20
+            [0, 0, 1, 1, 1, 1, 1, 0, 0],  # -30
+            [0, 0, 0, 0, 0, 0, 0, 0, 0],  # -40
+            [0, 0, 1, 1, 1, 1, 1, 0, 0],  # -45
         ], dtype=torch.float32)
 
         side_mask = torch.tensor([
-            [0,0,0,0,0,0,0,0,0],
-            [1,1,0,0,0,0,0,1,1],
-            [0,0,0,0,0,0,0,0,0],
-            [1,1,0,0,0,0,0,1,1],
-            [0,0,0,0,0,0,0,0,0],
-            [1,1,0,0,0,0,0,1,1],
-            [0,0,0,0,0,0,0,0,0],
-            [1,1,0,0,0,0,0,1,1],
-            [0,0,0,0,0,0,0,0,0],
-            [1,1,0,0,0,0,0,1,1],
-            [0,0,0,0,0,0,0,0,0],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [1, 1, 0, 0, 0, 0, 0, 1, 1],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [1, 1, 0, 0, 0, 0, 0, 1, 1],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [1, 1, 0, 0, 0, 0, 0, 1, 1],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [1, 1, 0, 0, 0, 0, 0, 1, 1],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [1, 1, 0, 0, 0, 0, 0, 1, 1],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0],
         ], dtype=torch.float32)
 
-        x_coords = [
-            -67.5, -47.5,
-            -30.0, -15.0, 0.0, 15.0, 30.0,
-            47.5, 67.5,
-        ]
+        x_coords = torch.tensor([
+            -67.5, -47.5, -30.0, -15.0, 0.0,
+            15.0, 30.0, 47.5, 67.5,
+        ])
 
-        y_coords = [
-            45.0,
-            40.0,
-            30.0,
-            20.0,
-            15.0,
-            0.0,
-            -15.0,
-            -20.0,
-            -30.0,
-            -40.0,
-            -45.0,
-        ]
+        y_coords = torch.tensor([
+            45.0, 40.0, 30.0, 20.0, 15.0, 0.0,
+            -15.0, -20.0, -30.0, -40.0, -45.0,
+        ])
 
-        coord_X = torch.zeros(
-            self.height,
-            self.width,
-            dtype=torch.float32,
+        yy, xx = torch.meshgrid(
+            y_coords,
+            x_coords,
+            indexing="ij",
         )
 
-        coord_Y = torch.zeros(
-            self.height,
-            self.width,
-            dtype=torch.float32,
-        )
+        occupied = central_mask + side_mask
 
-        module_mask = (
-            central_mask + side_mask
-        )
-
-        for row, y in enumerate(y_coords):
-            for col, x in enumerate(x_coords):
-                if module_mask[row, col] > 0:
-                    coord_X[row, col] = x
-                    coord_Y[row, col] = y
-
-        central_square = (
-            central_mask * 225.0
-        )
-
-        side_square = (
-            side_mask * 400.0
-        )
-
-        central_depth = (
-            central_mask * 7.0
-        )
-
-        side_depth = (
-            side_mask * 10.0
-        )
+        # =====================================================
+        # 2. ДВУМЕРНЫЕ ПРИЗНАКИ
+        #
+        # Используются для расчёта физической энергии
+        # и формирования геометрических 3D-признаков
+        # =====================================================
 
         self.register_buffer(
             "central_mask",
-            central_mask.unsqueeze(0).unsqueeze(0),
+            central_mask[None, None],
         )
 
         self.register_buffer(
             "side_mask",
-            side_mask.unsqueeze(0).unsqueeze(0),
+            side_mask[None, None],
         )
 
         self.register_buffer(
             "central_square",
-            central_square.unsqueeze(0).unsqueeze(0),
+            (central_mask * 225.0)[None, None],
         )
 
         self.register_buffer(
             "side_square",
-            side_square.unsqueeze(0).unsqueeze(0),
-        )
-
-        self.register_buffer(
-            "central_depth",
-            central_depth.unsqueeze(0).unsqueeze(0),
-        )
-
-        self.register_buffer(
-            "side_depth",
-            side_depth.unsqueeze(0).unsqueeze(0),
+            (side_mask * 400.0)[None, None],
         )
 
         self.register_buffer(
             "coord_X",
-            coord_X.unsqueeze(0).unsqueeze(0),
+            (xx * occupied)[None, None],
         )
 
         self.register_buffer(
             "coord_Y",
-            coord_Y.unsqueeze(0).unsqueeze(0),
+            (yy * occupied)[None, None],
         )
 
+        # =====================================================
+        # 3. ТРЁХМЕРНЫЕ МАСКИ
+        #
+        # (1, 1, 10, 11, 9)
+        # =====================================================
+
+        central_3d = (
+            central_mask[None, None, None]
+            .expand(1, 1, 10, 11, 9)
+            .clone()
+        )
+
+        # Центральные модули: 7 секций
+        central_3d[:, :, 7:, :, :] = 0.0
+
+        side_3d = (
+            side_mask[None, None, None]
+            .expand(1, 1, 10, 11, 9)
+            .clone()
+        )
+
+        self.register_buffer(
+            "central_mask_3d",
+            central_3d,
+        )
+
+        self.register_buffer(
+            "side_mask_3d",
+            side_3d,
+        )
+
+        self.register_buffer(
+            "physical_mask_3d",
+            central_3d + side_3d,
+        )
+
+        # =====================================================
+        # 4. CONV3D
+        #
+        # 1 канал с энерговыделением
+        # + 7 физических условий
+        # + 6 геометрических признаков
+        # = 14 входных каналов
+        # =====================================================
+
         self.conv1 = spectral_norm(
-            nn.Conv2d(
-                in_channels=18,
+            nn.Conv3d(
+                in_channels=1 + self.condition_dim + 6,
                 out_channels=32,
                 kernel_size=3,
                 stride=1,
                 padding=1,
             )
         )
-        
+
         self.conv2 = spectral_norm(
-            nn.Conv2d(
+            nn.Conv3d(
                 in_channels=32,
                 out_channels=64,
                 kernel_size=3,
-                stride=2,
+                stride=(1, 2, 2),
                 padding=1,
             )
         )
-        
+
         self.conv3 = spectral_norm(
-            nn.Conv2d(
+            nn.Conv3d(
                 in_channels=64,
                 out_channels=128,
                 kernel_size=3,
-                stride=2,
+                stride=(1, 2, 2),
                 padding=1,
             )
         )
-        
+
         self.conv4 = spectral_norm(
-            nn.Conv2d(
+            nn.Conv3d(
                 in_channels=128,
                 out_channels=128,
                 kernel_size=3,
@@ -274,112 +279,166 @@ class CaloganPhysicsDiscriminator3D(nn.Module):
                 padding=1,
             )
         )
-        
-        self.pool = nn.AdaptiveAvgPool2d((1, 1))
-        
+
+        self.pool = nn.AdaptiveAvgPool3d(
+            (1, 1, 1)
+        )
+
+        # =====================================================
+        # 5. ENERGY-AWARE + УСЛОВИЯ
+        #
+        # 128 свёрточных признаков
+        # + 7 физических условий
+        # + 10 энергий продольных секций
+        # + 1 полная энергия события
+        # =====================================================
+
         self.fc1 = spectral_norm(
             nn.Linear(
                 128 + self.condition_dim + 11,
                 128,
             )
         )
-        
+
         self.fc2 = spectral_norm(
-            nn.Linear(128, 1)
+            nn.Linear(
+                128,
+                1,
+            )
         )
 
-    def _prepare_condition(
-        self,
-        y,
-    ):
+    # =========================================================
+    # 6. ПОДГОТОВКА УСЛОВИЙ
+    # =========================================================
+
+    def _prepare_condition(self, y):
+
         point, momentum = y
 
         if self.add_points_norms_and_angles:
-            point = aux.add_angle_and_norm(
-                point
+
+            angle = torch.atan2(
+                point[:, 1],
+                point[:, 0],
+            ).unsqueeze(1)
+
+            norm = torch.linalg.norm(
+                point,
+                dim=1,
+                keepdim=True,
+            )
+
+            point = torch.cat(
+                [point, angle, norm],
+                dim=1,
             )
 
         condition = torch.cat(
-            [
-                momentum,
-                point,
-            ],
+            [momentum, point],
             dim=1,
         )
 
         return condition
 
-    def forward(
-        self,
-        energy_map,
-        y,
-    ):
+    # =========================================================
+    # 7. ГЕОМЕТРИЧЕСКИЕ ПРИЗНАКИ ДЛЯ CONV3D
+    #
+    # Всего 6 каналов, без канала глубины
+    # =========================================================
 
-        condition = self._prepare_condition(y)
+    def _geometry_features(self, batch_size):
+
+        cm = self.central_mask_3d
+        sm = self.side_mask_3d
+
+        geometry = torch.cat([
+            cm,
+            sm,
+
+            (
+                self.central_square.unsqueeze(2)
+                / 400.0
+            ) * cm,
+
+            (
+                self.side_square.unsqueeze(2)
+                / 400.0
+            ) * sm,
+
+            (
+                self.coord_X.unsqueeze(2)
+                / 67.5
+            ) * self.physical_mask_3d,
+
+            (
+                self.coord_Y.unsqueeze(2)
+                / 45.0
+            ) * self.physical_mask_3d,
+
+        ], dim=1)
+
+        return geometry.expand(
+            batch_size,
+            -1, -1, -1, -1,
+        )
+
+    # =========================================================
+    # 8. FORWARD
+    # =========================================================
+
+    def forward(self, energy_map, y):
+
+        # Вход: log1p(плотность)
+        # (B, 10, 11, 9)
+
+        if (
+            energy_map.ndim != 4
+            or tuple(energy_map.shape[1:]) != (10, 11, 9)
+        ):
+            raise ValueError(
+                "Expected shape (B,10,11,9), "
+                f"got {tuple(energy_map.shape)}"
+            )
 
         batch_size = energy_map.size(0)
 
-        central_mask = self.central_mask.expand(
-            batch_size, -1, -1, -1
+        condition = self._prepare_condition(y)
+
+        # Передаём условия непосредственно в Conv3d
+        condition_3d = (
+            condition[:, :, None, None, None]
+            .expand(
+                -1,
+                -1,
+                self.depth,
+                self.height,
+                self.width,
+            )
         )
 
-        side_mask = self.side_mask.expand(
-            batch_size, -1, -1, -1
-        )
+        # -----------------------------------------------------
+        # Свёрточная часть
+        # -----------------------------------------------------
 
-        central_square = self.central_square.expand(
-            batch_size, -1, -1, -1
-        )
+        x = torch.cat([
+            energy_map.unsqueeze(1),
+            condition_3d,
+            self._geometry_features(batch_size),
+        ], dim=1)
 
-        side_square = self.side_square.expand(
-            batch_size, -1, -1, -1
-        )
-
-        central_depth = self.central_depth.expand(
-            batch_size, -1, -1, -1
-        )
-
-        side_depth = self.side_depth.expand(
-            batch_size, -1, -1, -1
-        )
-
-        coord_X = self.coord_X.expand(
-            batch_size, -1, -1, -1
-        )
-
-        coord_Y = self.coord_Y.expand(
-            batch_size, -1, -1, -1
-        )
-
-        x = torch.cat(
-            [
-                energy_map,
-                central_mask,
-                side_mask,
-                central_square / 400.0,
-                side_square / 400.0,
-                central_depth / 10.0,
-                side_depth / 10.0,
-                coord_X / 67.5,
-                coord_Y / 45.0,
-            ],
-            dim=1,
-        )
-
-        x = self.conv1(x)
-        x = self.activation(x)
-
-        x = self.conv2(x)
-        x = self.activation(x)
-
-        x = self.conv3(x)
-        x = self.activation(x)
-
-        x = self.conv4(x)
-        x = self.activation(x)
+        x = self.activation(self.conv1(x))
+        x = self.activation(self.conv2(x))
+        x = self.activation(self.conv3(x))
+        x = self.activation(self.conv4(x))
 
         x = self.pool(x)
-        x = x.flatten(1)
+        x = x.flatten(start_dim=1)
+
+        # -----------------------------------------------------
+        # ENERGY-AWARE
+        #
+        # Восстановление физической энергии
+        # -----------------------------------------------------
 
         density = torch.expm1(
             energy_map
@@ -390,47 +449,36 @@ class CaloganPhysicsDiscriminator3D(nn.Module):
             + self.side_square
         )
 
-        physical_energy = (
-            density * area
-        )
+        physical_energy = density * area
 
+        # Энергия каждой продольной секции
         layer_energy = physical_energy.sum(
             dim=(2, 3)
         )
 
+        # Полная энергия события
         total_energy = layer_energy.sum(
             dim=1,
             keepdim=True,
         )
 
-        log_layer_energy = torch.log1p(
-            layer_energy
-        )
+        # Логарифмируем энергетические признаки
+        energy_features = torch.cat([
+            torch.log1p(layer_energy),
+            torch.log1p(total_energy),
+        ], dim=1)
 
-        log_total_energy = torch.log1p(
-            total_energy
-        )
+        # -----------------------------------------------------
+        # Объединяем информацию
+        # -----------------------------------------------------
 
-        energy_features = torch.cat(
-            [
-                log_layer_energy,
-                log_total_energy,
-            ],
-            dim=1,
-        )
+        x = torch.cat([
+            x,
+            condition,
+            energy_features,
+        ], dim=1)
 
-        x = torch.cat(
-            [
-                x,
-                condition,
-                energy_features,
-            ],
-            dim=1,
-        )
+        x = self.activation(self.fc1(x))
 
-        x = self.fc1(x)
-        x = self.activation(x)
-
-        x = self.fc2(x)
-
-        return x
+        # WGAN critic: без Sigmoid
+        return self.fc2(x)
