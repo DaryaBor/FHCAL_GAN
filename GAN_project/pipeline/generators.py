@@ -196,8 +196,8 @@ class CaloganPhysicsGenerator(Generator):
 # ============================================================
 # ВЕРСИЯ С МНОГОКАНАЛЬНОЙ АРХИТЕКТУРОЙ
 # ============================================================
-
 class CaloganPhysicsGenerator3D(nn.Module):
+
     def __init__(
         self,
         noise_dim: int,
@@ -208,7 +208,6 @@ class CaloganPhysicsGenerator3D(nn.Module):
 
         self.noise_dim = noise_dim
         self.activation = act_func
-
         self.add_points_norms_and_angles = add_points_norms_and_angles
 
         self.condition_dim = (
@@ -217,421 +216,421 @@ class CaloganPhysicsGenerator3D(nn.Module):
 
         self.hidden_channels = 16
 
-    
-
+        self.depth = 10
         self.height = 11
         self.width = 9
 
-        module_coords = {
-            1:  [30.0, 45.0, 202.22000122070312],
-            2:  [15.0, 45.0, 202.22000122070312],
-            3:  [0.0, 45.0, 202.22000122070312],
-            4:  [-15.0, 45.0, 202.22000122070312],
-            5:  [-30.0, 45.0, 202.22000122070312],
-
-            6:  [30.0, 30.0, 202.22000122070312],
-            7:  [15.0, 30.0, 202.22000122070312],
-            8:  [0.0, 30.0, 202.22000122070312],
-            9:  [-15.0, 30.0, 202.22000122070312],
-            10: [-30.0, 30.0, 202.22000122070312],
-
-            11: [30.0, 15.0, 202.22000122070312],
-            12: [15.0, 15.0, 202.22000122070312],
-            13: [0.0, 15.0, 202.22000122070312],
-            14: [-15.0, 15.0, 202.22000122070312],
-            15: [-30.0, 15.0, 202.22000122070312],
-
-            16: [30.0, 0.0, 202.22000122070312],
-            17: [15.0, 0.0, 202.22000122070312],
-            18: [-15.0, 0.0, 202.22000122070312],
-            19: [-30.0, 0.0, 202.22000122070312],
-
-            20: [30.0, -15.0, 202.22000122070312],
-            21: [15.0, -15.0, 202.22000122070312],
-            22: [0.0, -15.0, 202.22000122070312],
-            23: [-15.0, -15.0, 202.22000122070312],
-            24: [-30.0, -15.0, 202.22000122070312],
-
-            25: [30.0, -30.0, 202.22000122070312],
-            26: [15.0, -30.0, 202.22000122070312],
-            27: [0.0, -30.0, 202.22000122070312],
-            28: [-15.0, -30.0, 202.22000122070312],
-            29: [-30.0, -30.0, 202.22000122070312],
-
-            30: [30.0, -45.0, 202.22000122070312],
-            31: [15.0, -45.0, 202.22000122070312],
-            32: [0.0, -45.0, 202.22000122070312],
-            33: [-15.0, -45.0, 202.22000122070312],
-            34: [-30.0, -45.0, 202.22000122070312],
-
-            # Правые боковые модули
-            35: [67.5, 40.0, 202.22000122070312],
-            36: [47.5, 40.0, 202.22000122070312],
-
-            37: [67.5, 20.0, 202.22000122070312],
-            38: [47.5, 20.0, 202.22000122070312],
-
-            39: [67.5, 0.0, 202.22000122070312],
-            40: [47.5, 0.0, 202.22000122070312],
-
-            41: [67.5, -20.0, 202.22000122070312],
-            42: [47.5, -20.0, 202.22000122070312],
-
-            43: [67.5, -40.0, 202.22000122070312],
-            44: [47.5, -40.0, 202.22000122070312],
-
-            # Левые боковые модули
-            45: [-47.5, 40.0, 202.22000122070312],
-            46: [-67.5, 40.0, 202.22000122070312],
-
-            47: [-47.5, 20.0, 202.22000122070312],
-            48: [-67.5, 20.0, 202.22000122070312],
-
-            49: [-47.5, 0.0, 202.22000122070312],
-            50: [-67.5, 0.0, 202.22000122070312],
-
-            51: [-47.5, -20.0, 202.22000122070312],
-            52: [-67.5, -20.0, 202.22000122070312],
-
-            53: [-47.5, -40.0, 202.22000122070312],
-            54: [-67.5, -40.0, 202.22000122070312],
-        }
-
-        x_coords = [
-            -67.5, -47.5,
-            -30.0, -15.0, 0.0, 15.0, 30.0,
-            47.5, 67.5,
-        ]
-
-        y_coords = [
-            45.0,
-            40.0,
-            30.0,
-            20.0,
-            15.0,
-            0.0,
-            -15.0,
-            -20.0,
-            -30.0,
-            -40.0,
-            -45.0,
-        ]
-
-      
+        # =====================================================
+        # 1. ГЕОМЕТРИЯ FHCAL
+        # =====================================================
 
         central_mask = torch.tensor([
-            [0,0,1,1,1,1,1,0,0],  #  45
-            [0,0,0,0,0,0,0,0,0],  #  40
-            [0,0,1,1,1,1,1,0,0],  #  30
-            [0,0,0,0,0,0,0,0,0],  #  20
-            [0,0,1,1,1,1,1,0,0],  #  15
-            [0,0,1,1,0,1,1,0,0],  #   0
-            [0,0,1,1,1,1,1,0,0],  # -15
-            [0,0,0,0,0,0,0,0,0],  # -20
-            [0,0,1,1,1,1,1,0,0],  # -30
-            [0,0,0,0,0,0,0,0,0],  # -40
-            [0,0,1,1,1,1,1,0,0],  # -45
+            [0, 0, 1, 1, 1, 1, 1, 0, 0],  #  45
+            [0, 0, 0, 0, 0, 0, 0, 0, 0],  #  40
+            [0, 0, 1, 1, 1, 1, 1, 0, 0],  #  30
+            [0, 0, 0, 0, 0, 0, 0, 0, 0],  #  20
+            [0, 0, 1, 1, 1, 1, 1, 0, 0],  #  15
+            [0, 0, 1, 1, 0, 1, 1, 0, 0],  #   0
+            [0, 0, 1, 1, 1, 1, 1, 0, 0],  # -15
+            [0, 0, 0, 0, 0, 0, 0, 0, 0],  # -20
+            [0, 0, 1, 1, 1, 1, 1, 0, 0],  # -30
+            [0, 0, 0, 0, 0, 0, 0, 0, 0],  # -40
+            [0, 0, 1, 1, 1, 1, 1, 0, 0],  # -45
         ], dtype=torch.float32)
 
         side_mask = torch.tensor([
-            [0,0,0,0,0,0,0,0,0],  #  45
-            [1,1,0,0,0,0,0,1,1],  #  40
-            [0,0,0,0,0,0,0,0,0],  #  30
-            [1,1,0,0,0,0,0,1,1],  #  20
-            [0,0,0,0,0,0,0,0,0],  #  15
-            [1,1,0,0,0,0,0,1,1],  #   0
-            [0,0,0,0,0,0,0,0,0],  # -15
-            [1,1,0,0,0,0,0,1,1],  # -20
-            [0,0,0,0,0,0,0,0,0],  # -30
-            [1,1,0,0,0,0,0,1,1],  # -40
-            [0,0,0,0,0,0,0,0,0],  # -45
+            [0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [1, 1, 0, 0, 0, 0, 0, 1, 1],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [1, 1, 0, 0, 0, 0, 0, 1, 1],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [1, 1, 0, 0, 0, 0, 0, 1, 1],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [1, 1, 0, 0, 0, 0, 0, 1, 1],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [1, 1, 0, 0, 0, 0, 0, 1, 1],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0],
         ], dtype=torch.float32)
 
+        x_coords = torch.tensor([
+            -67.5, -47.5, -30.0, -15.0, 0.0,
+            15.0, 30.0, 47.5, 67.5,
+        ])
 
+        y_coords = torch.tensor([
+            45.0, 40.0, 30.0, 20.0, 15.0, 0.0,
+            -15.0, -20.0, -30.0, -40.0, -45.0,
+        ])
 
-        coord_X = torch.zeros(
-            self.height,
-            self.width,
-            dtype=torch.float32,
+        yy, xx = torch.meshgrid(
+            y_coords,
+            x_coords,
+            indexing="ij"
         )
 
-        coord_Y = torch.zeros(
-            self.height,
-            self.width,
-            dtype=torch.float32,
-        )
+        occupied = central_mask + side_mask
 
-        for module_id, (x, y, z) in module_coords.items():
-
-            row = y_coords.index(y)
-            col = x_coords.index(x)
-
-            coord_X[row, col] = x
-            coord_Y[row, col] = y
-
-  
-
-        central_square = central_mask * (15.0 * 15.0)
-        side_square = side_mask * (20.0 * 20.0)
-
-        central_depth = central_mask * 7.0
-        side_depth = side_mask * 10.0
-
- 
-    
+        # =====================================================
+        # 2. ДВУМЕРНЫЕ ПРИЗНАКИ
+        #
+        # Оставляем для совместимости с train.py
+        # =====================================================
 
         self.register_buffer(
             "central_mask",
-            central_mask.unsqueeze(0).unsqueeze(0),
+            central_mask[None, None]
         )
 
         self.register_buffer(
             "side_mask",
-            side_mask.unsqueeze(0).unsqueeze(0),
+            side_mask[None, None]
         )
 
         self.register_buffer(
             "central_square",
-            central_square.unsqueeze(0).unsqueeze(0),
+            (central_mask * 225.0)[None, None]
         )
 
         self.register_buffer(
             "side_square",
-            side_square.unsqueeze(0).unsqueeze(0),
-        )
-
-        self.register_buffer(
-            "central_depth",
-            central_depth.unsqueeze(0).unsqueeze(0),
-        )
-
-        self.register_buffer(
-            "side_depth",
-            side_depth.unsqueeze(0).unsqueeze(0),
+            (side_mask * 400.0)[None, None]
         )
 
         self.register_buffer(
             "coord_X",
-            coord_X.unsqueeze(0).unsqueeze(0),
+            (xx * occupied)[None, None]
         )
 
         self.register_buffer(
             "coord_Y",
-            coord_Y.unsqueeze(0).unsqueeze(0),
+            (yy * occupied)[None, None]
         )
 
+        # =====================================================
+        # 3. ТРЁХМЕРНЫЕ МАСКИ
+        #
+        # Размерность: (1, 1, 10, 11, 9)
+        # =====================================================
 
+        central_3d = (
+            central_mask[None, None, None]
+            .expand(1, 1, 10, 11, 9)
+            .clone()
+        )
+
+        # Центральные модули имеют только 7 секций
+        central_3d[:, :, 7:, :, :] = 0.0
+
+        side_3d = (
+            side_mask[None, None, None]
+            .expand(1, 1, 10, 11, 9)
+            .clone()
+        )
+
+        self.register_buffer(
+            "central_mask_3d",
+            central_3d
+        )
+
+        self.register_buffer(
+            "side_mask_3d",
+            side_3d
+        )
+
+        self.register_buffer(
+            "physical_mask_3d",
+            central_3d + side_3d
+        )
+
+        # =====================================================
+        # 4. ПОЛНОСВЯЗНЫЕ СЛОИ
+        #
+        # Сохранены из multi-channel
+        # =====================================================
 
         self.fc1 = nn.Linear(
             noise_dim + self.condition_dim,
-            256,
+            256
         )
 
         self.bn1 = nn.BatchNorm1d(256)
 
         self.fc2 = nn.Linear(
             256 + self.condition_dim,
-            512,
+            512
         )
 
         self.bn2 = nn.BatchNorm1d(512)
 
         self.fc3 = nn.Linear(
             512 + self.condition_dim,
-            1024,
+            1024
         )
 
         self.bn3 = nn.BatchNorm1d(1024)
 
+        # =====================================================
+        # 5. СОЗДАНИЕ ТРЁХМЕРНОГО ОБЪЁМА
+        #
+        # (B, 16, 10, 11, 9)
+        # =====================================================
+
         self.central_fc = nn.Linear(
             1024 + self.condition_dim,
-            self.hidden_channels * self.height * self.width,
+            (
+                self.hidden_channels
+                * self.depth
+                * self.height
+                * self.width
+            )
         )
 
-    
-        self.central_conv1 = nn.Conv2d(
-            in_channels=self.hidden_channels + 8,
+        # =====================================================
+        # 6. ТРЁХМЕРНЫЕ СВЁРТКИ
+        #
+        # 16 скрытых каналов
+        # + 7 физических условий
+        # + 6 геометрических признаков
+        # = 29 входных каналов
+        # =====================================================
+
+        self.central_conv1 = nn.Conv3d(
+            in_channels=(
+                self.hidden_channels
+                + self.condition_dim
+                + 6
+            ),
             out_channels=32,
             kernel_size=3,
             stride=1,
-            padding=1,
+            padding=1
         )
 
-        self.central_conv2 = nn.Conv2d(
+        self.central_conv2 = nn.Conv3d(
             in_channels=32,
             out_channels=32,
             kernel_size=3,
             stride=1,
-            padding=1,
+            padding=1
         )
 
-   
-        self.energy_out = nn.Conv2d(
+        # Два канала:
+        # 0 - центральные модули
+        # 1 - боковые модули
+        self.energy_out = nn.Conv3d(
             in_channels=32,
-            out_channels=17,
+            out_channels=2,
             kernel_size=1,
             stride=1,
-            padding=0,
+            padding=0
         )
 
+    # =========================================================
+    # 7. ПОДГОТОВКА ФИЗИЧЕСКИХ УСЛОВИЙ
+    # =========================================================
 
     def _prepare_condition(self, y):
 
         point, momentum = y
 
         if self.add_points_norms_and_angles:
-            point = aux.add_angle_and_norm(point)
+
+            angle = torch.atan2(
+                point[:, 1],
+                point[:, 0]
+            ).unsqueeze(1)
+
+            norm = torch.linalg.norm(
+                point,
+                dim=1,
+                keepdim=True
+            )
+
+            point = torch.cat(
+                [point, angle, norm],
+                dim=1
+            )
 
         condition = torch.cat(
-            [
-                momentum,
-                point
-            ],
+            [momentum, point],
             dim=1
         )
 
         return condition
 
-    def forward(
-        self,
-        noise,
-        y,
-    ):
+    # =========================================================
+    # 8. ГЕОМЕТРИЧЕСКИЕ ПРИЗНАКИ ДЛЯ CONV3D
+    # =========================================================
 
-   
+    def _geometry_features(self, batch_size):
+
+        cm = self.central_mask_3d
+        sm = self.side_mask_3d
+
+        geometry = torch.cat([
+            cm,
+            sm,
+
+            (
+                self.central_square.unsqueeze(2)
+                / 400.0
+            ) * cm,
+
+            (
+                self.side_square.unsqueeze(2)
+                / 400.0
+            ) * sm,
+
+            (
+                self.coord_X.unsqueeze(2)
+                / 67.5
+            ) * self.physical_mask_3d,
+
+            (
+                self.coord_Y.unsqueeze(2)
+                / 45.0
+            ) * self.physical_mask_3d,
+
+        ], dim=1)
+
+        return geometry.expand(
+            batch_size,
+            -1, -1, -1, -1
+        )
+
+    # =========================================================
+    # 9. FORWARD
+    # =========================================================
+
+    def forward(self, noise, y):
+
         condition = self._prepare_condition(y)
+
+        batch_size = noise.size(0)
+
+        # -----------------------------------------------------
+        # Полносвязная часть
+        # -----------------------------------------------------
+
         x = torch.cat(
             [noise, condition],
-            dim=1,
+            dim=1
         )
 
-        x = self.fc1(x)
-        x = self.bn1(x)
-        x = self.activation(x)
+        x = self.activation(
+            self.bn1(self.fc1(x))
+        )
 
         x = torch.cat(
             [x, condition],
-            dim=1,
+            dim=1
         )
 
-        x = self.fc2(x)
-        x = self.bn2(x)
-        x = self.activation(x)
+        x = self.activation(
+            self.bn2(self.fc2(x))
+        )
 
         x = torch.cat(
             [x, condition],
-            dim=1,
+            dim=1
         )
 
-        x = self.fc3(x)
-        x = self.bn3(x)
-        x = self.activation(x)
+        x = self.activation(
+            self.bn3(self.fc3(x))
+        )
 
         x = torch.cat(
             [x, condition],
-            dim=1,
+            dim=1
         )
+
+        # -----------------------------------------------------
+        # Формирование трёхмерного объёма
+        # -----------------------------------------------------
 
         x = self.central_fc(x)
 
-        x = x.view(
-            x.size(0),
+        x = x.reshape(
+            batch_size,
             self.hidden_channels,
+            self.depth,
             self.height,
-            self.width,
+            self.width
         )
 
-#    для увеличения количества событий  в рамках 1 батча
+        # -----------------------------------------------------
+        # Передача физических условий в Conv3d
+        #
+        # Аналогично test
+        # -----------------------------------------------------
 
-        batch_size = x.size(0)
-
-        central_mask = self.central_mask.expand(
-            batch_size, -1, -1, -1
+        condition_3d = (
+            condition[:, :, None, None, None]
+            .expand(
+                -1,
+                -1,
+                self.depth,
+                self.height,
+                self.width
+            )
         )
 
-        side_mask = self.side_mask.expand(
-            batch_size, -1, -1, -1
+        geometry_3d = self._geometry_features(
+            batch_size
         )
 
-        central_square = self.central_square.expand(
-            batch_size, -1, -1, -1
+        x = torch.cat([
+            x,
+            condition_3d,
+            geometry_3d
+        ], dim=1)
+
+        # -----------------------------------------------------
+        # Трёхмерные свёртки
+        # -----------------------------------------------------
+
+        x = self.activation(
+            self.central_conv1(x)
         )
 
-        side_square = self.side_square.expand(
-            batch_size, -1, -1, -1
+        x = self.activation(
+            self.central_conv2(x)
         )
 
-        central_depth = self.central_depth.expand(
-            batch_size, -1, -1, -1
+        # -----------------------------------------------------
+        # Выходная активация
+        #
+        # Softplus оставлен без изменений
+        # -----------------------------------------------------
+
+        density = F.softplus(
+            self.energy_out(x)
         )
 
-        side_depth = self.side_depth.expand(
-            batch_size, -1, -1, -1
-        )
-
-        coord_X = self.coord_X.expand(
-            batch_size, -1, -1, -1
-        )
-
-        coord_Y = self.coord_Y.expand(
-            batch_size, -1, -1, -1
-        )
-
-        x = torch.cat(
-            [
-                x,
-                central_mask,
-                side_mask,
-                central_square / 400.0,
-                side_square / 400.0,
-                central_depth / 10.0,
-                side_depth / 10.0,
-                coord_X / 67.5,
-                coord_Y / 45.0,
-            ],
-            dim=1,
-        )
-
-     
-
-        x = self.central_conv1(x)
-        x = self.activation(x)
-
-        x = self.central_conv2(x)
-        x = self.activation(x)
-        
-        density = F.softplus(self.energy_out(x))
-        
         log_density = torch.log1p(density)
-        
-        central_density = log_density[:, :7]
-        side_density = log_density[:, 7:]
 
-  
+        # -----------------------------------------------------
+        # Центральные и боковые модули
+        # -----------------------------------------------------
+
         central_density = (
-            central_density * central_mask
+            log_density[:, 0:1]
+            * self.central_mask_3d
         )
 
         side_density = (
-            side_density * side_mask
+            log_density[:, 1:2]
+            * self.side_mask_3d
         )
 
-        physical_density = torch.zeros(
-            density.size(0),
-            10,
-            self.height,
-            self.width,
-            device=density.device,
-            dtype=density.dtype,
+        # -----------------------------------------------------
+        # Итоговая карта FHCal
+        # -----------------------------------------------------
+
+        physical_density = (
+            central_density + side_density
         )
 
-        physical_density[:, :7] = (
-            central_density
-            + side_density[:, :7]
-        )
-
-        physical_density[:, 7:] = (
-            side_density[:, 7:]
-        )
+        physical_density = physical_density.squeeze(1)
 
         return physical_density
