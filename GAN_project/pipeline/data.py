@@ -212,7 +212,7 @@ def log1p_inverse_transform(x: torch.Tensor):
 
 # USED
 # Берёт путь к файлу с данными и возвращеает train/val датасеты
-def get_physics_dataset(path: str, train: bool = True, val_ratio: float = 0.5,
+def get_physics_dataset(path: str, train: bool = True, val_ratio: float = 0.1,
                         log1p_energy: bool = True) -> torch.utils.data.Dataset:
     TRAIN_VAL_SPLIT_SEED = 0x3df3fa
 
