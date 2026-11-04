@@ -1,3 +1,4 @@
+
 import contextlib
 from typing import Tuple, Generator, Dict, Any, Optional, ContextManager, Callable, List
 from abc import ABC, abstractmethod
@@ -74,9 +75,8 @@ def check_tensor(x: torch.Tensor, prefix: str = ''):
         return
     raise ValueError(msg)
 
+
 def _layer_profile_loss(real_layer, fake_layer, eps=1e-8):
-
-
     real_total = real_layer.sum(dim=1, keepdim=True)
     fake_total = fake_layer.sum(dim=1, keepdim=True)
 
@@ -101,9 +101,9 @@ def _layer_profile_loss(real_layer, fake_layer, eps=1e-8):
         (fake_fraction - real_fraction) ** 2
     )
 
+
 ## диагностическая функция, которая возвращает потери по каждой части FHCal отдельно
 def layer_fraction_losses(real_x, fake_x, eps=1e-8):
-
     # real_x and fake_x are stored in log1p(E).
     # Layer fractions must be calculated from physical energy.
     real_energy = torch.expm1(real_x).clamp_min(0.0)
@@ -137,7 +137,6 @@ def layer_fraction_losses(real_x, fake_x, eps=1e-8):
     )
 
     return center_loss, left_loss, right_loss
-
 
 
 def layer_fraction_loss(real_x, fake_x, eps=1e-8):
@@ -187,10 +186,8 @@ def quantile_energy_loss(
         + eps
     )
 
-
     # REAL не должен получать градиенты
     real_energy = real_energy.detach()
-
 
     quantiles = torch.tensor(
         [
@@ -205,13 +202,12 @@ def quantile_energy_loss(
             0.50,
             0.75,
             0.90,
-            0.95, 
+            0.95,
             0.97,
         ],
         device=fake_x.device,
         dtype=fake_x.dtype,
     )
-
 
     # Чем дальше в хвост,
     # тем больше его значение для loss
@@ -235,7 +231,6 @@ def quantile_energy_loss(
         dtype=fake_x.dtype,
     )
 
-
     real_q = torch.quantile(
         real_energy,
         quantiles
@@ -246,16 +241,15 @@ def quantile_energy_loss(
         quantiles
     )
 
-
     loss_per_quantile = (
         fake_q - real_q
     ) ** 2
-
 
     return (
         weights
         * loss_per_quantile
     ).sum() / weights.sum()
+
 
 def peak_concentration_loss(
     real_x: torch.Tensor,
@@ -263,16 +257,13 @@ def peak_concentration_loss(
     eps: float = 1e-8,
 ) -> torch.Tensor:
 
-
     real_e = torch.expm1(real_x)
     fake_e = torch.expm1(fake_x)
-
 
     real_2d = real_e.sum(dim=1)
     fake_2d = fake_e.sum(dim=1)
 
     # (B, 7, 9) -> (B, 63)
-
     real_flat = real_2d.flatten(start_dim=1)
     fake_flat = fake_2d.flatten(start_dim=1)
 
@@ -286,7 +277,6 @@ def peak_concentration_loss(
     # -------------------------
 
     for k in [1, 3, 5]:
-
         real_top = torch.topk(
             real_flat,
             k=k,
@@ -332,16 +322,77 @@ def peak_concentration_loss(
 
     return torch.stack(losses).mean()
 
+
+def layer_distribution_loss(real_x, fake_x):
+    """
+    Сравнение распределений энергии по продольным слоям
+    отдельно для центральной, левой и правой областей FHCal.
+
+    real_x, fake_x: (B, 10, 7, 9), log1p(E)
+    """
+
+    # Восстанавливаем физическую энергию
+    real_e = torch.expm1(real_x).clamp_min(0.0)
+    fake_e = torch.expm1(fake_x).clamp_min(0.0)
+
+    regions = (
+        (slice(0, 7), slice(2, 7)),   # center
+        (slice(None), slice(0, 2)),  # left
+        (slice(None), slice(7, 9)),  # right
+    )
+
+    region_losses = []
+
+    for layers, columns in regions:
+
+        # Энергия каждого слоя
+        # (B, L)
+        real_layers = real_e[:, layers, :, columns].sum(
+            dim=(2, 3)
+        )
+
+        fake_layers = fake_e[:, layers, :, columns].sum(
+            dim=(2, 3)
+        )
+
+        # Переход в log1p-шкалу
+        real_log = torch.log1p(real_layers).detach()
+        fake_log = torch.log1p(fake_layers)
+
+        # Сортировка по событиям батча
+        # Каждый слой сортируется отдельно
+        real_sorted = torch.sort(
+            real_log,
+            dim=0
+        ).values
+
+        fake_sorted = torch.sort(
+            fake_log,
+            dim=0
+        ).values
+
+        # Расстояние Вассерштейна W1 для каждого слоя
+        # и усреднение по слоям области
+        region_loss = torch.abs(
+            fake_sorted - real_sorted
+        ).mean()
+
+        region_losses.append(region_loss)
+
+    return torch.stack(region_losses).mean()
+
+
 class WganEpochTrainer(GanEpochTrainer):
     def __init__(
         self,
         n_critic: int = 5,
         batch_size: int = 64,
-        lambda_energy: float = 0.005,
+        lambda_energy: float = 0.0,
         lambda_sparsity: float = 0.0,
         lambda_layer_fraction: float = 5.0,
         lambda_quantile: float = 0.04,
         lambda_peak: float = 0.1,
+        lambda_layer_distribution: float = 0.1,
         debug_every: int = 50,
     ) -> None:
         self.n_critic = n_critic
@@ -352,35 +403,63 @@ class WganEpochTrainer(GanEpochTrainer):
         self.lambda_quantile = lambda_quantile
         self.debug_every = debug_every
         self.lambda_peak = lambda_peak
+        self.lambda_layer_distribution = lambda_layer_distribution
 
         self.gen_batch_cnt = 0
         self.disc_batch_cnt = 0
 
-    def train_epoch(self, gan_model: GAN,
-                    train_dataset: torch.utils.data.Dataset, val_dataset: torch.utils.data.Dataset,
-                    generator_stepper: Stepper, critic_stepper: Stepper,
-                    logger: Optional[GANLogger] = None,
-                    regularizer: Optional[Regularizer] = None) -> None:
+    def train_epoch(
+        self,
+        gan_model: GAN,
+        train_dataset: torch.utils.data.Dataset,
+        val_dataset: torch.utils.data.Dataset,
+        generator_stepper: Stepper,
+        critic_stepper: Stepper,
+        logger: Optional[GANLogger] = None,
+        regularizer: Optional[Regularizer] = None
+    ) -> None:
+
         dataloader = torch.utils.data.DataLoader(
             train_dataset,
             batch_size=self.batch_size,
             collate_fn=collate_fn,
             shuffle=True
         )
+
         random_dataloader = get_random_infinite_dataloader(
             train_dataset,
             batch_size=self.batch_size,
             collate_fn=collate_fn
         )
+
         random_dataloader_iter = iter(random_dataloader)
 
-        def get_batches(real_batch) -> Tuple[torch.Tensor, torch.Tensor, Any, Any]:
-            real_batch_x, real_batch_y = move_batch_to(real_batch, get_local_device())
-            gen_batch_y = real_batch_y
-            noise_batch_z = gan_model.gen_noise(len(real_batch_x)).to(get_local_device())
-            gen_batch_x = gan_model.generator(noise_batch_z, gen_batch_y).to(get_local_device())
+        def get_batches(
+            real_batch
+        ) -> Tuple[torch.Tensor, torch.Tensor, Any, Any]:
 
-            return gen_batch_x, real_batch_x, gen_batch_y, real_batch_y
+            real_batch_x, real_batch_y = move_batch_to(
+                real_batch,
+                get_local_device()
+            )
+
+            gen_batch_y = real_batch_y
+
+            noise_batch_z = gan_model.gen_noise(
+                len(real_batch_x)
+            ).to(get_local_device())
+
+            gen_batch_x = gan_model.generator(
+                noise_batch_z,
+                gen_batch_y
+            ).to(get_local_device())
+
+            return (
+                gen_batch_x,
+                real_batch_x,
+                gen_batch_y,
+                real_batch_y
+            )
 
         critic_adv_loss_total = 0.
         critic_loss_total = 0.
@@ -390,6 +469,10 @@ class WganEpochTrainer(GanEpochTrainer):
         gen_sparsity_loss_total = 0.
         gen_layer_fraction_loss_total = 0.
         gen_quantile_loss_total = 0.
+
+        # Накопление новой потери
+        gen_layer_distribution_loss_total = 0.
+
         regularizer_loss_total = 0.
         disc_grad_norm_total = 0.
         gen_grad_norm_total = 0.
@@ -400,26 +483,56 @@ class WganEpochTrainer(GanEpochTrainer):
         last_disc_real_vals = None
         last_disc_gen_vals = None
 
-        for batch_index, generator_batch in enumerate(tqdm(dataloader)):
-            
+        for batch_index, generator_batch in enumerate(
+            tqdm(dataloader)
+        ):
+
             gan_model.generator.requires_grad_(False)
 
             for t in range(self.n_critic):
+
                 self.disc_batch_cnt += 1
 
-                real_batch = next(random_dataloader_iter)
-                gen_batch_x, real_batch_x, gen_batch_y, real_batch_y = get_batches(real_batch)
+                real_batch = next(
+                    random_dataloader_iter
+                )
 
-                check_tensor(gen_batch_x, 'Generated values contain ')
+                gen_batch_x, real_batch_x, gen_batch_y, real_batch_y = get_batches(
+                    real_batch
+                )
 
-                disc_real_vals = gan_model.discriminator(real_batch_x, real_batch_y)
-                check_tensor(disc_real_vals, 'Discriminator values for real data contain ')
+                check_tensor(
+                    gen_batch_x,
+                    'Generated values contain '
+                )
 
-                disc_gen_vals = gan_model.discriminator(gen_batch_x, gen_batch_y)
-                check_tensor(disc_gen_vals, 'Discriminator values for generated data contain ')
+                disc_real_vals = gan_model.discriminator(
+                    real_batch_x,
+                    real_batch_y
+                )
 
-                loss = - (disc_real_vals - disc_gen_vals).mean()
-                critic_adv_loss_total += loss.item() * len(gen_batch_x)
+                check_tensor(
+                    disc_real_vals,
+                    'Discriminator values for real data contain '
+                )
+
+                disc_gen_vals = gan_model.discriminator(
+                    gen_batch_x,
+                    gen_batch_y
+                )
+
+                check_tensor(
+                    disc_gen_vals,
+                    'Discriminator values for generated data contain '
+                )
+
+                loss = -(
+                    disc_real_vals - disc_gen_vals
+                ).mean()
+
+                critic_adv_loss_total += (
+                    loss.item() * len(gen_batch_x)
+                )
 
                 if regularizer is not None:
                     regularizer_loss = regularizer()
@@ -439,8 +552,15 @@ class WganEpochTrainer(GanEpochTrainer):
                     loss += regularizer_loss
 
                 loss.backward()
-                critic_loss_total += loss.item() * len(gen_batch_x)
-                disc_grad_norm = calc_grad_norm(gan_model.discriminator)
+
+                critic_loss_total += (
+                    loss.item() * len(gen_batch_x)
+                )
+
+                disc_grad_norm = calc_grad_norm(
+                    gan_model.discriminator
+                )
+
                 disc_grad_norm_total += disc_grad_norm
 
                 if logger is not None:
@@ -471,47 +591,49 @@ class WganEpochTrainer(GanEpochTrainer):
             # =========================
             # generator training
             # =========================
+
             gan_model.discriminator.requires_grad_(False)
 
-            gen_batch_x, real_batch_x, gen_batch_y, real_batch_y = get_batches(generator_batch)
+            gen_batch_x, real_batch_x, gen_batch_y, real_batch_y = get_batches(
+                generator_batch
+            )
 
             observations = (
-                gan_model.discriminator(real_batch_x, real_batch_y)
-                - gan_model.discriminator(gen_batch_x, gen_batch_y)
+                gan_model.discriminator(
+                    real_batch_x,
+                    real_batch_y
+                )
+                - gan_model.discriminator(
+                    gen_batch_x,
+                    gen_batch_y
+                )
             )
 
             adv_gen_loss = observations.mean()
 
             fake_energy = gen_batch_x.sum(
                 dim=tuple(
-                    range(
-                        1,
-                        gen_batch_x.ndim
-                    )
+                    range(1, gen_batch_x.ndim)
                 )
             )
-            
+
             real_energy = real_batch_x.sum(
                 dim=tuple(
-                    range(
-                        1,
-                        real_batch_x.ndim
-                    )
+                    range(1, real_batch_x.ndim)
                 )
             )
-            
+
             energy_loss = torch.mean(
                 (
-                    fake_energy
-                    - real_energy
+                    fake_energy - real_energy
                 ) ** 2
             )
-            
 
             sparsity_loss = gen_batch_x.abs().mean()
+
             center_loss, left_loss, right_loss = layer_fraction_losses(
                 real_batch_x,
-                gen_batch_x,
+                gen_batch_x
             )
 
             layer_frac_loss = (
@@ -522,15 +644,39 @@ class WganEpochTrainer(GanEpochTrainer):
 
             quantile_loss = quantile_energy_loss(
                 real_batch_x,
-                gen_batch_x,
+                gen_batch_x
             )
-            gen_center_fraction_loss_total += center_loss.item() * len(gen_batch_x)
-            gen_left_fraction_loss_total += left_loss.item() * len(gen_batch_x)
-            gen_right_fraction_loss_total += right_loss.item() * len(gen_batch_x)
+
+            gen_center_fraction_loss_total += (
+                center_loss.item() * len(gen_batch_x)
+            )
+
+            gen_left_fraction_loss_total += (
+                left_loss.item() * len(gen_batch_x)
+            )
+
+            gen_right_fraction_loss_total += (
+                right_loss.item() * len(gen_batch_x)
+            )
+
             peak_loss = peak_concentration_loss(
-            real_batch_x,
-            gen_batch_x
+                real_batch_x,
+                gen_batch_x
             )
+
+            # =========================
+            # НОВАЯ ФУНКЦИЯ ПОТЕРЬ
+            # =========================
+
+            layer_dist_loss = layer_distribution_loss(
+                real_batch_x,
+                gen_batch_x
+            )
+
+            # =========================
+            # ПОЛНЫЙ LOSS ГЕНЕРАТОРА
+            # =========================
+
             gen_loss = (
                 adv_gen_loss
                 + self.lambda_energy * energy_loss
@@ -538,61 +684,171 @@ class WganEpochTrainer(GanEpochTrainer):
                 + self.lambda_layer_fraction * layer_frac_loss
                 + self.lambda_quantile * quantile_loss
                 + self.lambda_peak * peak_loss
+                + self.lambda_layer_distribution * layer_dist_loss
             )
+
             if batch_index % self.debug_every == 0:
+
                 print("\n=== ENERGY DEBUG ===")
                 print("batch_index:", batch_index)
-                print("real energy min/mean/max:",
-                      real_energy.min().item(),
-                      real_energy.mean().item(),
-                      real_energy.max().item())
-                print("fake energy min/mean/max:",
-                      fake_energy.min().item(),
-                      fake_energy.mean().item(),
-                      fake_energy.max().item())
-                print("real abs mean:", real_batch_x.abs().mean().item())
-                print("fake abs mean:", gen_batch_x.abs().mean().item())
 
-                print("real nonzero ratio:",
-                      (real_batch_x.abs() > 1e-6).float().mean().item())
-                print("fake nonzero ratio:",
-                      (gen_batch_x.abs() > 1e-6).float().mean().item())
+                print(
+                    "real energy min/mean/max:",
+                    real_energy.min().item(),
+                    real_energy.mean().item(),
+                    real_energy.max().item()
+                )
+
+                print(
+                    "fake energy min/mean/max:",
+                    fake_energy.min().item(),
+                    fake_energy.mean().item(),
+                    fake_energy.max().item()
+                )
+
+                print(
+                    "real abs mean:",
+                    real_batch_x.abs().mean().item()
+                )
+
+                print(
+                    "fake abs mean:",
+                    gen_batch_x.abs().mean().item()
+                )
+
+                print(
+                    "real nonzero ratio:",
+                    (real_batch_x.abs() > 1e-6).float().mean().item()
+                )
+
+                print(
+                    "fake nonzero ratio:",
+                    (gen_batch_x.abs() > 1e-6).float().mean().item()
+                )
 
                 print("\n=== ENERGY LOSS DEBUG ===")
-                print("adv_gen_loss:", adv_gen_loss.item())
-                print("energy_loss:", energy_loss.item())
-                print("lambda_energy:", self.lambda_energy)
-                print("lambda_energy * energy_loss:",
-                      (self.lambda_energy * energy_loss).item())
-                print("sparsity_loss:", sparsity_loss.item())
-                print("lambda_sparsity:", self.lambda_sparsity)
-                print("lambda_sparsity * sparsity_loss:",
-                      (self.lambda_sparsity * sparsity_loss).item())
-                print("layer_frac_loss:", layer_frac_loss.item())
-                print("lambda_layer_fraction:", self.lambda_layer_fraction)
-                print("lambda_layer_fraction * layer_frac_loss:",
-                      (self.lambda_layer_fraction * layer_frac_loss).item())
-                print("quantile_loss:", quantile_loss.item())
-                print("lambda_quantile:", self.lambda_quantile)
-                print("lambda_quantile * quantile_loss:",
-                      (self.lambda_quantile * quantile_loss).item())
-                print("gen_loss total:", gen_loss.item())
-                print("peak_loss:", peak_loss.item())
+
+                print(
+                    "adv_gen_loss:",
+                    adv_gen_loss.item()
+                )
+
+                print(
+                    "energy_loss:",
+                    energy_loss.item()
+                )
+
+                print(
+                    "lambda_energy:",
+                    self.lambda_energy
+                )
+
+                print(
+                    "lambda_energy * energy_loss:",
+                    (self.lambda_energy * energy_loss).item()
+                )
+
+                print(
+                    "sparsity_loss:",
+                    sparsity_loss.item()
+                )
+
+                print(
+                    "lambda_sparsity:",
+                    self.lambda_sparsity
+                )
+
+                print(
+                    "lambda_sparsity * sparsity_loss:",
+                    (self.lambda_sparsity * sparsity_loss).item()
+                )
+
+                print(
+                    "layer_frac_loss:",
+                    layer_frac_loss.item()
+                )
+
+                print(
+                    "lambda_layer_fraction:",
+                    self.lambda_layer_fraction
+                )
+
+                print(
+                    "lambda_layer_fraction * layer_frac_loss:",
+                    (self.lambda_layer_fraction * layer_frac_loss).item()
+                )
+
+                print(
+                    "quantile_loss:",
+                    quantile_loss.item()
+                )
+
+                print(
+                    "lambda_quantile:",
+                    self.lambda_quantile
+                )
+
+                print(
+                    "lambda_quantile * quantile_loss:",
+                    (self.lambda_quantile * quantile_loss).item()
+                )
+
+                # Логирование новой потери
+                print(
+                    "layer_distribution_loss:",
+                    layer_dist_loss.item()
+                )
+
+                print(
+                    "weighted_layer_distribution_loss:",
+                    (
+                        self.lambda_layer_distribution
+                        * layer_dist_loss
+                    ).item()
+                )
+
+                print(
+                    "gen_loss total:",
+                    gen_loss.item()
+                )
+
+                print(
+                    "peak_loss:",
+                    peak_loss.item()
+                )
+
                 print(
                     "weighted peak_loss:",
                     (
-                        self.lambda_peak
-                        * peak_loss
+                        self.lambda_peak * peak_loss
                     ).item()
                 )
 
             self.gen_batch_cnt += 1
 
-            gen_adv_loss_total += adv_gen_loss.item() * len(gen_batch_x)
-            gen_energy_loss_total += energy_loss.item() * len(gen_batch_x)
-            gen_sparsity_loss_total += sparsity_loss.item() * len(gen_batch_x)
-            gen_layer_fraction_loss_total += layer_frac_loss.item() * len(gen_batch_x)
-            gen_quantile_loss_total += quantile_loss.item() * len(gen_batch_x)
+            gen_adv_loss_total += (
+                adv_gen_loss.item() * len(gen_batch_x)
+            )
+
+            gen_energy_loss_total += (
+                energy_loss.item() * len(gen_batch_x)
+            )
+
+            gen_sparsity_loss_total += (
+                sparsity_loss.item() * len(gen_batch_x)
+            )
+
+            gen_layer_fraction_loss_total += (
+                layer_frac_loss.item() * len(gen_batch_x)
+            )
+
+            gen_quantile_loss_total += (
+                quantile_loss.item() * len(gen_batch_x)
+            )
+
+            gen_layer_distribution_loss_total += (
+                layer_dist_loss.item() * len(gen_batch_x)
+            )
 
             if regularizer is not None:
                 regularizer_loss = regularizer()
@@ -613,11 +869,16 @@ class WganEpochTrainer(GanEpochTrainer):
                 gen_loss += regularizer_loss
                 regularizer.step()
 
-            gen_loss_total += gen_loss.item() * len(gen_batch_x)
+            gen_loss_total += (
+                gen_loss.item() * len(gen_batch_x)
+            )
 
             gen_loss.backward()
 
-            gen_grad_norm = calc_grad_norm(gan_model.generator)
+            gen_grad_norm = calc_grad_norm(
+                gan_model.generator
+            )
+
             gen_grad_norm_total += gen_grad_norm
 
             generator_stepper.step()
@@ -628,27 +889,61 @@ class WganEpochTrainer(GanEpochTrainer):
             if logger is not None:
                 logger.log_metrics(
                     data={
-                        'train/generator/batch_loss': gen_loss.item(),
-                        'train/generator/batch_adv_loss': adv_gen_loss.item(),
-                        'train/generator/batch_energy_loss': energy_loss.item(),
-                        'train/generator/batch_weighted_energy_loss': (
-                            self.lambda_energy * energy_loss
-                        ).item(),
-                        'train/generator/batch_sparsity_loss': sparsity_loss.item(),
-                        'train/generator/batch_weighted_sparsity_loss': (
-                            self.lambda_sparsity * sparsity_loss
-                        ).item(),
-                        'train/generator/batch_layer_fraction_loss': layer_frac_loss.item(),
-                        'train/generator/batch_weighted_layer_fraction_loss': (
-                            self.lambda_layer_fraction * layer_frac_loss
-                        ).item(),
-                        'train/generator/batch_quantile_loss': quantile_loss.item(),
-                        'train/generator/batch_weighted_quantile_loss': (
-                            self.lambda_quantile * quantile_loss
-                        ).item(),
-                        'train/generator/batch_grad_norm': gen_grad_norm,
-                        'train/generator/fake_energy_mean': fake_energy.mean().item(),
-                        'train/generator/real_energy_mean': real_energy.mean().item(),
+                        'train/generator/batch_loss':
+                            gen_loss.item(),
+
+                        'train/generator/batch_adv_loss':
+                            adv_gen_loss.item(),
+
+                        'train/generator/batch_energy_loss':
+                            energy_loss.item(),
+
+                        'train/generator/batch_weighted_energy_loss':
+                            (
+                                self.lambda_energy * energy_loss
+                            ).item(),
+
+                        'train/generator/batch_sparsity_loss':
+                            sparsity_loss.item(),
+
+                        'train/generator/batch_weighted_sparsity_loss':
+                            (
+                                self.lambda_sparsity * sparsity_loss
+                            ).item(),
+
+                        'train/generator/batch_layer_fraction_loss':
+                            layer_frac_loss.item(),
+
+                        'train/generator/batch_weighted_layer_fraction_loss':
+                            (
+                                self.lambda_layer_fraction * layer_frac_loss
+                            ).item(),
+
+                        'train/generator/batch_quantile_loss':
+                            quantile_loss.item(),
+
+                        'train/generator/batch_weighted_quantile_loss':
+                            (
+                                self.lambda_quantile * quantile_loss
+                            ).item(),
+
+                        # Новая функция потерь
+                        'train/generator/batch_layer_distribution_loss':
+                            layer_dist_loss.item(),
+
+                        'train/generator/batch_weighted_layer_distribution_loss':
+                            (
+                                self.lambda_layer_distribution * layer_dist_loss
+                            ).item(),
+
+                        'train/generator/batch_grad_norm':
+                            gen_grad_norm,
+
+                        'train/generator/fake_energy_mean':
+                            fake_energy.mean().item(),
+
+                        'train/generator/real_energy_mean':
+                            real_energy.mean().item(),
                     },
                     period='gen_batch',
                     period_index=self.gen_batch_cnt,
@@ -659,8 +954,10 @@ class WganEpochTrainer(GanEpochTrainer):
         critic_stepper.epoch_finished()
 
         if logger is not None:
+
             if generator_stepper.scheduler is not None:
                 generator_lr = generator_stepper.scheduler.get_last_lr()
+
                 logger.log_metrics(
                     data={'generator/lr': generator_lr},
                     period='epoch',
@@ -669,6 +966,7 @@ class WganEpochTrainer(GanEpochTrainer):
 
             if critic_stepper.scheduler is not None:
                 critic_lr = critic_stepper.scheduler.get_last_lr()
+
                 logger.log_metrics(
                     data={'critic/lr': critic_lr},
                     period='epoch',
@@ -677,126 +975,329 @@ class WganEpochTrainer(GanEpochTrainer):
 
             logger.log_metrics(
                 data={
-                    'train/critic/loss': ( critic_loss_total   / (len(train_dataset) * self.n_critic)),
-                    'train/critic/adv_loss':  (critic_adv_loss_total / (len(train_dataset) * self.n_critic)),
-                    'train/generator/loss': gen_loss_total / len(train_dataset),
-                    'train/generator/adv_loss': gen_adv_loss_total / len(train_dataset),
-                    'train/generator/energy_loss': gen_energy_loss_total / len(train_dataset),
+                    'train/critic/loss': (
+                        critic_loss_total /
+                        (len(train_dataset) * self.n_critic)
+                    ),
+
+                    'train/critic/adv_loss': (
+                        critic_adv_loss_total /
+                        (len(train_dataset) * self.n_critic)
+                    ),
+
+                    'train/generator/loss':
+                        gen_loss_total / len(train_dataset),
+
+                    'train/generator/adv_loss':
+                        gen_adv_loss_total / len(train_dataset),
+
+                    'train/generator/energy_loss':
+                        gen_energy_loss_total / len(train_dataset),
+
                     'train/generator/weighted_energy_loss': (
-                        self.lambda_energy * gen_energy_loss_total / len(train_dataset)
+                        self.lambda_energy
+                        * gen_energy_loss_total
+                        / len(train_dataset)
                     ),
-                    'train/generator/sparsity_loss': gen_sparsity_loss_total / len(train_dataset),
+
+                    'train/generator/sparsity_loss':
+                        gen_sparsity_loss_total / len(train_dataset),
+
                     'train/generator/weighted_sparsity_loss': (
-                        self.lambda_sparsity * gen_sparsity_loss_total / len(train_dataset)
+                        self.lambda_sparsity
+                        * gen_sparsity_loss_total
+                        / len(train_dataset)
                     ),
-                    'train/generator/layer_fraction_loss': gen_layer_fraction_loss_total / len(train_dataset),
+
+                    'train/generator/layer_fraction_loss':
+                        gen_layer_fraction_loss_total / len(train_dataset),
+
                     'train/generator/weighted_layer_fraction_loss': (
-                        self.lambda_layer_fraction * gen_layer_fraction_loss_total / len(train_dataset)
+                        self.lambda_layer_fraction
+                        * gen_layer_fraction_loss_total
+                        / len(train_dataset)
                     ),
-                    'train/generator/quantile_loss': gen_quantile_loss_total / len(train_dataset),
+
+                    'train/generator/layer_distribution_loss':
+                        gen_layer_distribution_loss_total / len(train_dataset),
+
+                    'train/generator/weighted_layer_distribution_loss': (
+                        self.lambda_layer_distribution
+                        * gen_layer_distribution_loss_total
+                        / len(train_dataset)
+                    ),
+
+                    'train/generator/quantile_loss':
+                        gen_quantile_loss_total / len(train_dataset),
+
                     'train/generator/weighted_quantile_loss': (
-                        self.lambda_quantile * gen_quantile_loss_total / len(train_dataset)
+                        self.lambda_quantile
+                        * gen_quantile_loss_total
+                        / len(train_dataset)
                     ),
-                    'train/regularizer/loss': regularizer_loss_total / (
-                        len(dataloader) * (self.n_critic + 1)
+
+                    'train/regularizer/loss': (
+                        regularizer_loss_total /
+                        (len(dataloader) * (self.n_critic + 1))
                     ),
-                    'train/discriminator/grad_norm': disc_grad_norm_total / (
-                        len(dataloader) * self.n_critic
+
+                    'train/discriminator/grad_norm': (
+                        disc_grad_norm_total /
+                        (len(dataloader) * self.n_critic)
                     ),
-                    'train/generator/grad_norm': gen_grad_norm_total / len(dataloader),
-                    'train/generator/center_fraction_loss': gen_center_fraction_loss_total / len(train_dataset),
-                    'train/generator/left_fraction_loss': gen_left_fraction_loss_total / len(train_dataset),
-                    'train/generator/right_fraction_loss': gen_right_fraction_loss_total / len(train_dataset),
+
+                    'train/generator/grad_norm':
+                        gen_grad_norm_total / len(dataloader),
+
+                    'train/generator/center_fraction_loss':
+                        gen_center_fraction_loss_total / len(train_dataset),
+
+                    'train/generator/left_fraction_loss':
+                        gen_left_fraction_loss_total / len(train_dataset),
+
+                    'train/generator/right_fraction_loss':
+                        gen_right_fraction_loss_total / len(train_dataset),
                 },
                 period='epoch',
                 commit=False
             )
 
-        avg_loss_d = (critic_loss_total / (len(train_dataset) * self.n_critic))
+        avg_loss_d = (
+            critic_loss_total /
+            (len(train_dataset) * self.n_critic)
+        )
+
         avg_loss_g = gen_loss_total / len(train_dataset)
         avg_adv_g = gen_adv_loss_total / len(train_dataset)
-        avg_energy_loss = gen_energy_loss_total / len(train_dataset)
-        avg_weighted_energy_loss = self.lambda_energy * avg_energy_loss
-        avg_sparsity_loss = gen_sparsity_loss_total / len(train_dataset)
-        avg_weighted_sparsity_loss = self.lambda_sparsity * avg_sparsity_loss
-        avg_layer_fraction_loss = gen_layer_fraction_loss_total / len(train_dataset)
-        avg_weighted_layer_fraction_loss = self.lambda_layer_fraction * avg_layer_fraction_loss
-        avg_quantile_loss = gen_quantile_loss_total / len(train_dataset)
-        avg_weighted_quantile_loss = self.lambda_quantile * avg_quantile_loss
+
+        avg_energy_loss = (
+            gen_energy_loss_total / len(train_dataset)
+        )
+
+        avg_weighted_energy_loss = (
+            self.lambda_energy * avg_energy_loss
+        )
+
+        avg_sparsity_loss = (
+            gen_sparsity_loss_total / len(train_dataset)
+        )
+
+        avg_weighted_sparsity_loss = (
+            self.lambda_sparsity * avg_sparsity_loss
+        )
+
+        avg_layer_fraction_loss = (
+            gen_layer_fraction_loss_total / len(train_dataset)
+        )
+
+        avg_weighted_layer_fraction_loss = (
+            self.lambda_layer_fraction * avg_layer_fraction_loss
+        )
+
+        avg_layer_distribution_loss = (
+            gen_layer_distribution_loss_total / len(train_dataset)
+        )
+
+        avg_weighted_layer_distribution_loss = (
+            self.lambda_layer_distribution * avg_layer_distribution_loss
+        )
+
+        avg_quantile_loss = (
+            gen_quantile_loss_total / len(train_dataset)
+        )
+
+        avg_weighted_quantile_loss = (
+            self.lambda_quantile * avg_quantile_loss
+        )
 
         avg_wd = -avg_loss_d
 
         print(f"  Средний loss критика: {avg_loss_d:.4f}")
         print(f"  Средний loss генератора: {avg_loss_g:.4f}")
         print(f"  Средний adv loss генератора: {avg_adv_g:.4f}")
-        print(f"  Средний energy loss генератора: {avg_energy_loss:.4f}")
-        print(f"  Средний weighted energy loss генератора: {avg_weighted_energy_loss:.4f}")
-        print(f"  Средний sparsity loss генератора: {avg_sparsity_loss:.4f}")
-        print(f"  Средний weighted sparsity loss генератора: {avg_weighted_sparsity_loss:.4f}")
-        print(f"  Средний layer fraction loss генератора: {avg_layer_fraction_loss:.4f}")
-        print(f"  Средний weighted layer fraction loss генератора: {avg_weighted_layer_fraction_loss:.4f}")
-        print(f"  Средний quantile loss генератора: {avg_quantile_loss:.4f}")
-        print(f"  Средний weighted quantile loss генератора: {avg_weighted_quantile_loss:.4f}")
-        print(f"  Grad norm критика: {disc_grad_norm_total / (len(dataloader) * self.n_critic):.4f}")
-        print(f"  Grad norm генератора: {gen_grad_norm_total / len(dataloader):.4f}")
 
-        if last_disc_real_vals is not None and last_disc_gen_vals is not None:
-            print(f"  D(real) среднее: {last_disc_real_vals.mean().item():.4f}")
-            print(f"  D(fake) среднее: {last_disc_gen_vals.mean().item():.4f}")
+        print(
+            f"  Средний energy loss генератора: "
+            f"{avg_energy_loss:.4f}"
+        )
+
+        print(
+            f"  Средний weighted energy loss генератора: "
+            f"{avg_weighted_energy_loss:.4f}"
+        )
+
+        print(
+            f"  Средний sparsity loss генератора: "
+            f"{avg_sparsity_loss:.4f}"
+        )
+
+        print(
+            f"  Средний weighted sparsity loss генератора: "
+            f"{avg_weighted_sparsity_loss:.4f}"
+        )
+
+        print(
+            f"  Средний layer fraction loss генератора: "
+            f"{avg_layer_fraction_loss:.4f}"
+        )
+
+        print(
+            f"  Средний weighted layer fraction loss генератора: "
+            f"{avg_weighted_layer_fraction_loss:.4f}"
+        )
+
+        print(
+            f"  Средний layer distribution loss генератора: "
+            f"{avg_layer_distribution_loss:.4f}"
+        )
+
+        print(
+            f"  Средний weighted layer distribution loss генератора: "
+            f"{avg_weighted_layer_distribution_loss:.4f}"
+        )
+
+        print(
+            f"  Средний quantile loss генератора: "
+            f"{avg_quantile_loss:.4f}"
+        )
+
+        print(
+            f"  Средний weighted quantile loss генератора: "
+            f"{avg_weighted_quantile_loss:.4f}"
+        )
+
+        print(
+            f"  Grad norm критика: "
+            f"{disc_grad_norm_total / (len(dataloader) * self.n_critic):.4f}"
+        )
+
+        print(
+            f"  Grad norm генератора: "
+            f"{gen_grad_norm_total / len(dataloader):.4f}"
+        )
+
+        if (
+            last_disc_real_vals is not None
+            and last_disc_gen_vals is not None
+        ):
+            print(
+                f"  D(real) среднее: "
+                f"{last_disc_real_vals.mean().item():.4f}"
+            )
+
+            print(
+                f"  D(fake) среднее: "
+                f"{last_disc_gen_vals.mean().item():.4f}"
+            )
 
         print(f"  loss: {avg_wd:.4f}")
 
-        
-def fill_result(result: Result, metric_names: List, metric_values: List):
-    for metric_name, metric_value in zip(metric_names, metric_values):
+
+def fill_result(
+    result: Result,
+    metric_names: List,
+    metric_values: List
+):
+    for metric_name, metric_value in zip(
+        metric_names,
+        metric_values
+    ):
         if isinstance(metric_name, List):
-            fill_result(result, metric_name, metric_value)
+            fill_result(
+                result,
+                metric_name,
+                metric_value
+            )
         else:
-            result.add_metric(metric_name, value=metric_value)
+            result.add_metric(
+                metric_name,
+                value=metric_value
+            )
 
 
 class GanTrainer:
-    def __init__(self, model_dir: ModelDir, save_checkpoint_once_in_epoch: int = 1,
-                 use_saved_checkpoint: bool = True) -> None:
+    def __init__(
+        self,
+        model_dir: ModelDir,
+        save_checkpoint_once_in_epoch: int = 1,
+        use_saved_checkpoint: bool = True
+    ) -> None:
         self.model_dir = model_dir
-        self.save_checkpoint_once_in_epoch = save_checkpoint_once_in_epoch
+        self.save_checkpoint_once_in_epoch = (
+            save_checkpoint_once_in_epoch
+        )
         self.use_saved_checkpoint = use_saved_checkpoint
 
-    def train(self, gan_model: GAN,
-              train_dataset: torch.utils.data.Dataset, val_dataset: torch.utils.data.Dataset,
-              generator_stepper: Stepper, critic_stepper: Stepper,
-              epoch_trainer: GanEpochTrainer,
-              n_epochs: int = 100,
-              metric: Optional[Metric] = None,
-              metric_predicate: Optional[TrainPredicate] = None,
-              logger_cm_fn: Optional[Callable[[], ContextManager[GANLogger]]] = None,
-              regularizer: Optional[Regularizer] = None,
-              normalization_loss: Optional[Callable] = None,
-              result_metrics: Optional[Tuple[List, MetricsSequence]] = None,
-              results_info: Optional[ExperimentInfo] = None) -> Generator[Tuple[int, GAN], None, GAN]:
+    def train(
+        self,
+        gan_model: GAN,
+        train_dataset: torch.utils.data.Dataset,
+        val_dataset: torch.utils.data.Dataset,
+        generator_stepper: Stepper,
+        critic_stepper: Stepper,
+        epoch_trainer: GanEpochTrainer,
+        n_epochs: int = 100,
+        metric: Optional[Metric] = None,
+        metric_predicate: Optional[TrainPredicate] = None,
+        logger_cm_fn: Optional[Callable[[], ContextManager[GANLogger]]] = None,
+        regularizer: Optional[Regularizer] = None,
+        normalization_loss: Optional[Callable] = None,
+        result_metrics: Optional[Tuple[List, MetricsSequence]] = None,
+        results_info: Optional[ExperimentInfo] = None
+    ) -> Generator[Tuple[int, GAN], None, GAN]:
+
         gan_model.to(get_local_device())
-        inverse_to_initial_domain_fn = getattr(train_dataset, 'inverse_transform', None)
+
+        inverse_to_initial_domain_fn = getattr(
+            train_dataset,
+            'inverse_transform',
+            None
+        )
+
         epoch = 1
 
         if self.use_saved_checkpoint:
             checkpoint = self.model_dir.get_checkpoint_state()
+
             if checkpoint is not None:
                 epoch = checkpoint['epoch']
-                print(f"Checkpoint was loaded. Current epoch: {epoch}")
-                gan_model.load_state_dict(checkpoint['gan'])
-                generator_stepper.load_state_dict(checkpoint['generator_stepper'])
-                critic_stepper.load_state_dict(checkpoint['critic_stepper'])
+
+                print(
+                    f"Checkpoint was loaded. Current epoch: {epoch}"
+                )
+
+                gan_model.load_state_dict(
+                    checkpoint['gan']
+                )
+
+                generator_stepper.load_state_dict(
+                    checkpoint['generator_stepper']
+                )
+
+                critic_stepper.load_state_dict(
+                    checkpoint['critic_stepper']
+                )
 
         if logger_cm_fn is None:
             logger_cm = contextlib.nullcontext(None)
         else:
-            logger_cm = logger_cm_fn() or contextlib.nullcontext(None)
+            logger_cm = (
+                logger_cm_fn()
+                or contextlib.nullcontext(None)
+            )
 
         with logger_cm as logger:
+
             while epoch <= n_epochs:
                 print(f"ЭПОХА {epoch}/{n_epochs}")
+
                 if logger is not None:
-                    logger.log_metrics(data={}, period='epoch', period_index=epoch, commit=False)
+                    logger.log_metrics(
+                        data={},
+                        period='epoch',
+                        period_index=epoch,
+                        commit=False
+                    )
 
                 epoch_trainer.train_epoch(
                     gan_model=gan_model,
@@ -809,7 +1310,14 @@ class GanTrainer:
                 )
 
                 if logger is not None:
-                    if metric is not None and (metric_predicate is None or metric_predicate(epoch=epoch)):
+
+                    if (
+                        metric is not None
+                        and (
+                            metric_predicate is None
+                            or metric_predicate(epoch=epoch)
+                        )
+                    ):
                         with torch.no_grad():
                             metrics_results = metric(
                                 gan_model=gan_model,
@@ -817,6 +1325,7 @@ class GanTrainer:
                                 val_dataset=val_dataset,
                                 inverse_to_initial_domain_fn=inverse_to_initial_domain_fn
                             )
+
                         log_metric(
                             metric,
                             results=metrics_results,
@@ -829,27 +1338,44 @@ class GanTrainer:
 
                 epoch += 1
 
-                if self.save_checkpoint_once_in_epoch != 0 and epoch % self.save_checkpoint_once_in_epoch == 0:
+                if (
+                    self.save_checkpoint_once_in_epoch != 0
+                    and epoch % self.save_checkpoint_once_in_epoch == 0
+                ):
                     checkpoint = {
                         'epoch': epoch,
                         'gan': gan_model.state_dict(),
                         'generator_stepper': generator_stepper.state_dict(),
                         'critic_stepper': critic_stepper.state_dict()
                     }
-                    self.model_dir.save_checkpoint_state(checkpoint)
+
+                    self.model_dir.save_checkpoint_state(
+                        checkpoint
+                    )
 
                 yield epoch, gan_model
 
-        if result_metrics is not None and results_info is not None:
+        if (
+            result_metrics is not None
+            and results_info is not None
+        ):
             result = results_info.get_result()
+
             metrics_values = result_metrics[1](
                 gan_model=gan_model,
                 train_dataset=train_dataset,
                 val_dataset=val_dataset,
                 inverse_to_initial_domain_fn=inverse_to_initial_domain_fn
             )
+
             print(metrics_values)
-            fill_result(result, result_metrics[0], metrics_values)
+
+            fill_result(
+                result,
+                result_metrics[0],
+                metrics_values
+            )
+
             results_info.save_result(result)
 
         return gan_model
