@@ -1,6 +1,9 @@
 
 import contextlib
-from typing import Tuple, Generator, Dict, Any, Optional, ContextManager, Callable, List
+from typing import (
+    Tuple, Generator, Dict, Any, Optional,
+    ContextManager, Callable, List
+)
 from abc import ABC, abstractmethod
 
 import torch
@@ -9,7 +12,11 @@ from torch import optim
 from tqdm import tqdm
 
 from pipeline._aux import calc_grad_norm
-from pipeline.data import collate_fn, move_batch_to, get_random_infinite_dataloader
+from pipeline.data import (
+    collate_fn,
+    move_batch_to,
+    get_random_infinite_dataloader
+)
 from pipeline.device import get_local_device
 from pipeline.gan import GAN
 from pipeline.logger import GANLogger
@@ -22,10 +29,13 @@ from pipeline.results_storage import ExperimentInfo, Result
 from pipeline.storage import ModelDir
 
 
-# Обёртка над всем необходимым для шага градиентного спуска (оптимизатор + расписание lr)
 class Stepper:
-    def __init__(self, optimizer: optim.Optimizer,
-                 scheduler=None, scheduler_mode: str = 'epoch') -> None:
+    def __init__(
+        self,
+        optimizer: optim.Optimizer,
+        scheduler=None,
+        scheduler_mode: str = 'epoch'
+    ) -> None:
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.scheduler_mode = scheduler_mode
@@ -41,30 +51,39 @@ class Stepper:
 
     def state_dict(self) -> Dict[str, Any]:
         state_dict = {
-            'optimizer': self.optimizer.state_dict(),
+            'optimizer': self.optimizer.state_dict()
         }
+
         if self.scheduler is not None:
             state_dict['scheduler'] = self.scheduler.state_dict()
+
         return state_dict
 
     def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
         self.optimizer.load_state_dict(state_dict['optimizer'])
+
         if self.scheduler is not None:
             self.scheduler.load_state_dict(state_dict['scheduler'])
 
 
 class GanEpochTrainer(ABC):
     @abstractmethod
-    def train_epoch(self, gan_model: GAN,
-                    train_dataset: torch.utils.data.Dataset, val_dataset: torch.utils.data.Dataset,
-                    generator_stepper: Stepper, critic_stepper: Stepper,
-                    logger: Optional[GANLogger] = None,
-                    regularizer: Optional[Regularizer] = None) -> None:
+    def train_epoch(
+        self,
+        gan_model: GAN,
+        train_dataset: torch.utils.data.Dataset,
+        val_dataset: torch.utils.data.Dataset,
+        generator_stepper: Stepper,
+        critic_stepper: Stepper,
+        logger: Optional[GANLogger] = None,
+        regularizer: Optional[Regularizer] = None
+    ) -> None:
         pass
 
 
 def check_tensor(x: torch.Tensor, prefix: str = ''):
     msg = prefix
+
     if x.isnan().any():
         msg += 'NaNs'
     elif x.isinf().any():
@@ -73,15 +92,15 @@ def check_tensor(x: torch.Tensor, prefix: str = ''):
         msg += '-infs'
     else:
         return
+
     raise ValueError(msg)
 
 
 def _layer_profile_loss(real_layer, fake_layer, eps=1e-8):
+
     real_total = real_layer.sum(dim=1, keepdim=True)
     fake_total = fake_layer.sum(dim=1, keepdim=True)
 
-    # Берем только события, где REAL действительно
-    # содержит энергию в этой части FHCal
     mask = real_total[:, 0] > eps
 
     if not mask.any():
@@ -102,10 +121,8 @@ def _layer_profile_loss(real_layer, fake_layer, eps=1e-8):
     )
 
 
-## диагностическая функция, которая возвращает потери по каждой части FHCal отдельно
 def layer_fraction_losses(real_x, fake_x, eps=1e-8):
-    # real_x and fake_x are stored in log1p(E).
-    # Layer fractions must be calculated from physical energy.
+
     real_energy = torch.expm1(real_x).clamp_min(0.0)
     fake_energy = torch.expm1(fake_x).clamp_min(0.0)
 
@@ -119,142 +136,83 @@ def layer_fraction_losses(real_x, fake_x, eps=1e-8):
     fake_right = fake_energy[:, :, :, 7:9].sum(dim=(2, 3))
 
     center_loss = _layer_profile_loss(
-        real_center,
-        fake_center,
-        eps
+        real_center, fake_center, eps
     )
 
     left_loss = _layer_profile_loss(
-        real_left,
-        fake_left,
-        eps
+        real_left, fake_left, eps
     )
 
     right_loss = _layer_profile_loss(
-        real_right,
-        fake_right,
-        eps
+        real_right, fake_right, eps
     )
 
     return center_loss, left_loss, right_loss
 
 
 def layer_fraction_loss(real_x, fake_x, eps=1e-8):
+
     center_loss, left_loss, right_loss = layer_fraction_losses(
-        real_x,
-        fake_x,
-        eps,
+        real_x, fake_x, eps
     )
 
     return (
-        center_loss
-        + left_loss
-        + right_loss
+        center_loss + left_loss + right_loss
     ) / 3.0
 
 
-def quantile_energy_loss(
-    real_x,
-    fake_x,
-    eps=1e-8
-):
+def quantile_energy_loss(real_x, fake_x, eps=1e-8):
     """
-    real_x и fake_x находятся в log1p(E).
-
-    Loss сравнивает квантили полной
-    физической энергии события,
-    но делает это в log1p-шкале.
+    Сравнение квантилей полной физической энергии
+    REAL и FAKE в log1p-шкале.
     """
 
     real_energy = torch.log1p(
-        torch.expm1(real_x)
-        .sum(
-            dim=tuple(
-                range(1, real_x.ndim)
-            )
-        )
-        + eps
-    )
+        torch.expm1(real_x).sum(
+            dim=tuple(range(1, real_x.ndim))
+        ) + eps
+    ).detach()
 
     fake_energy = torch.log1p(
-        torch.expm1(fake_x)
-        .sum(
-            dim=tuple(
-                range(1, fake_x.ndim)
-            )
-        )
-        + eps
+        torch.expm1(fake_x).sum(
+            dim=tuple(range(1, fake_x.ndim))
+        ) + eps
     )
-
-    # REAL не должен получать градиенты
-    real_energy = real_energy.detach()
 
     quantiles = torch.tensor(
         [
-            0.05,
-            0.10,
-            0.15,
-            0.20,
-            0.25,
-            0.30,
-            0.35,
-            0.40,
-            0.50,
-            0.75,
-            0.90,
-            0.95,
-            0.97,
+            0.05, 0.10, 0.15, 0.20,
+            0.25, 0.30, 0.35, 0.40,
+            0.50, 0.75, 0.90, 0.95, 0.97
         ],
         device=fake_x.device,
-        dtype=fake_x.dtype,
+        dtype=fake_x.dtype
     )
 
-    # Чем дальше в хвост,
-    # тем больше его значение для loss
     weights = torch.tensor(
         [
-            1.0,   # q05 — нижний хвост
-            1.5,   # q10 — начало левого пика
-            2.0,   # q15
-            2.5,   # q20
-            3.0,   # q25 — центр левого пика
-            3.0,   # q30 — центр левого пика
-            2.5,   # q35
-            2.0,   # q40 — впадина между пиками
-            2.0,   # q50 — медиана уже совпадает
-            2.0,   # q75 — промежуточная область
-            3.0,   # q90 — начало правого хвоста
-            5.0,   # q95
-            7.0,   # q97 — край правого хвоста
+            1.0, 1.5, 2.0, 2.5,
+            3.0, 3.0, 2.5, 2.0,
+            2.0, 2.0, 3.0, 5.0, 7.0
         ],
         device=fake_x.device,
-        dtype=fake_x.dtype,
+        dtype=fake_x.dtype
     )
 
-    real_q = torch.quantile(
-        real_energy,
-        quantiles
-    )
+    real_q = torch.quantile(real_energy, quantiles)
+    fake_q = torch.quantile(fake_energy, quantiles)
 
-    fake_q = torch.quantile(
-        fake_energy,
-        quantiles
-    )
-
-    loss_per_quantile = (
-        fake_q - real_q
-    ) ** 2
+    loss_per_quantile = (fake_q - real_q) ** 2
 
     return (
-        weights
-        * loss_per_quantile
+        weights * loss_per_quantile
     ).sum() / weights.sum()
 
 
 def peak_concentration_loss(
     real_x: torch.Tensor,
     fake_x: torch.Tensor,
-    eps: float = 1e-8,
+    eps: float = 1e-8
 ) -> torch.Tensor:
 
     real_e = torch.expm1(real_x)
@@ -263,7 +221,6 @@ def peak_concentration_loss(
     real_2d = real_e.sum(dim=1)
     fake_2d = fake_e.sum(dim=1)
 
-    # (B, 7, 9) -> (B, 63)
     real_flat = real_2d.flatten(start_dim=1)
     fake_flat = fake_2d.flatten(start_dim=1)
 
@@ -272,31 +229,22 @@ def peak_concentration_loss(
 
     losses = []
 
-    # -------------------------
-    # top-1, top-3, top-5
-    # -------------------------
-
     for k in [1, 3, 5]:
+
         real_top = torch.topk(
-            real_flat,
-            k=k,
-            dim=1
+            real_flat, k=k, dim=1
         ).values.sum(dim=1)
 
         fake_top = torch.topk(
-            fake_flat,
-            k=k,
-            dim=1
+            fake_flat, k=k, dim=1
         ).values.sum(dim=1)
 
         real_fraction = (
-            real_top /
-            (real_total + eps)
+            real_top / (real_total + eps)
         ).detach()
 
         fake_fraction = (
-            fake_top /
-            (fake_total + eps)
+            fake_top / (fake_total + eps)
         )
 
         qs = torch.tensor(
@@ -304,75 +252,59 @@ def peak_concentration_loss(
             device=fake_x.device
         )
 
-        real_q = torch.quantile(
-            real_fraction,
-            qs
-        )
-
-        fake_q = torch.quantile(
-            fake_fraction,
-            qs
-        )
+        real_q = torch.quantile(real_fraction, qs)
+        fake_q = torch.quantile(fake_fraction, qs)
 
         losses.append(
-            torch.mean(
-                (fake_q - real_q) ** 2
-            )
+            torch.mean((fake_q - real_q) ** 2)
         )
 
     return torch.stack(losses).mean()
 
 
+# ==========================================================
+# СУЩЕСТВУЮЩАЯ ФУНКЦИЯ
+# W1 между распределениями абсолютной энергии слоёв
+# ==========================================================
+
 def layer_distribution_loss(real_x, fake_x):
     """
     Сравнение распределений энергии по продольным слоям
     отдельно для центральной, левой и правой областей FHCal.
-
-    real_x, fake_x: (B, 10, 7, 9), log1p(E)
     """
 
-    # Восстанавливаем физическую энергию
     real_e = torch.expm1(real_x).clamp_min(0.0)
     fake_e = torch.expm1(fake_x).clamp_min(0.0)
 
     regions = (
-        (slice(0, 7), slice(2, 7)),   # center
-        (slice(None), slice(0, 2)),  # left
-        (slice(None), slice(7, 9)),  # right
+        (slice(0, 7), slice(2, 7)),
+        (slice(None), slice(0, 2)),
+        (slice(None), slice(7, 9)),
     )
 
     region_losses = []
 
     for layers, columns in regions:
 
-        # Энергия каждого слоя
-        # (B, L)
-        real_layers = real_e[:, layers, :, columns].sum(
-            dim=(2, 3)
-        )
+        real_layers = real_e[
+            :, layers, :, columns
+        ].sum(dim=(2, 3))
 
-        fake_layers = fake_e[:, layers, :, columns].sum(
-            dim=(2, 3)
-        )
+        fake_layers = fake_e[
+            :, layers, :, columns
+        ].sum(dim=(2, 3))
 
-        # Переход в log1p-шкалу
         real_log = torch.log1p(real_layers).detach()
         fake_log = torch.log1p(fake_layers)
 
-        # Сортировка по событиям батча
-        # Каждый слой сортируется отдельно
         real_sorted = torch.sort(
-            real_log,
-            dim=0
+            real_log, dim=0
         ).values
 
         fake_sorted = torch.sort(
-            fake_log,
-            dim=0
+            fake_log, dim=0
         ).values
 
-        # Расстояние Вассерштейна W1 для каждого слоя
-        # и усреднение по слоям области
         region_loss = torch.abs(
             fake_sorted - real_sorted
         ).mean()
@@ -382,28 +314,155 @@ def layer_distribution_loss(real_x, fake_x):
     return torch.stack(region_losses).mean()
 
 
+# ==========================================================
+# НОВОЕ: УСЛОВНАЯ ФУНКЦИЯ ПОТЕРЬ
+# ==========================================================
+
+def conditional_energy_loss(
+    real_x,
+    fake_x,
+    conditions,
+    min_group_size=8
+):
+    """
+    Сравнивает распределения полной физической энергии
+    REAL и FAKE отдельно для групп с близкими X и Y.
+
+    real_x, fake_x:
+        (B, 10, 7, 9), log1p(E)
+
+    conditions:
+        (ParticlePoint, ParticleMomentum)
+
+    Группы:
+        X <= median(X), Y <= median(Y)
+        X <= median(X), Y > median(Y)
+        X > median(X),  Y <= median(Y)
+        X > median(X),  Y > median(Y)
+
+    Используется W1 в log1p-шкале.
+    """
+
+    # Входные координаты частицы
+    point = conditions[0][:, :2].detach()
+
+    if (
+        len(point) != len(real_x)
+        or len(real_x) != len(fake_x)
+    ):
+        raise ValueError(
+            "REAL, FAKE и условия должны "
+            "иметь одинаковый batch size"
+        )
+
+    # Полная физическая энергия каждого события
+    real_total = (
+        torch.expm1(real_x)
+        .clamp_min(0.0)
+        .flatten(start_dim=1)
+        .sum(dim=1)
+    )
+
+    fake_total = (
+        torch.expm1(fake_x)
+        .clamp_min(0.0)
+        .flatten(start_dim=1)
+        .sum(dim=1)
+    )
+
+    # Сравнение в log1p-шкале
+    real_log = torch.log1p(real_total).detach()
+    fake_log = torch.log1p(fake_total)
+
+    x = point[:, 0]
+    y = point[:, 1]
+
+    # Разделяем текущий батч на две части
+    # по каждой координате
+    x_median = x.median()
+    y_median = y.median()
+
+    losses = []
+
+    for is_right in (False, True):
+
+        if is_right:
+            x_mask = x > x_median
+        else:
+            x_mask = x <= x_median
+
+        for is_top in (False, True):
+
+            if is_top:
+                y_mask = y > y_median
+            else:
+                y_mask = y <= y_median
+
+            mask = x_mask & y_mask
+
+            # Пропускаем группы с малым числом событий
+            if int(mask.sum().item()) < min_group_size:
+                continue
+
+            # REAL и FAKE имеют одинаковые условия
+            # и одинаковую маску событий
+            real_sorted = torch.sort(
+                real_log[mask]
+            ).values
+
+            fake_sorted = torch.sort(
+                fake_log[mask]
+            ).values
+
+            # Одномерное расстояние W1
+            group_loss = torch.abs(
+                fake_sorted - real_sorted
+            ).mean()
+
+            losses.append(group_loss)
+
+    # Если все группы слишком маленькие,
+    # возвращаем нулевой loss с сохранением графа
+    if not losses:
+        return fake_log.sum() * 0.0
+
+    # Равный вес группам, прошедшим проверку
+    return torch.stack(losses).mean()
+
+
 class WganEpochTrainer(GanEpochTrainer):
+
     def __init__(
         self,
         n_critic: int = 5,
         batch_size: int = 64,
         lambda_energy: float = 0.0,
         lambda_sparsity: float = 0.0,
-        lambda_layer_fraction: float = 5.0,
+        lambda_layer_fraction: float = 0.5,
         lambda_quantile: float = 0.04,
         lambda_peak: float = 0.1,
-        lambda_layer_distribution: float = 0.1,
-        debug_every: int = 50,
+        lambda_layer_distribution: float = 0.5,
+
+        # НОВОЕ
+        lambda_conditional: float = 0.1,
+
+        debug_every: int = 50
     ) -> None:
+
         self.n_critic = n_critic
         self.batch_size = batch_size
+
         self.lambda_energy = lambda_energy
         self.lambda_sparsity = lambda_sparsity
         self.lambda_layer_fraction = lambda_layer_fraction
         self.lambda_quantile = lambda_quantile
-        self.debug_every = debug_every
         self.lambda_peak = lambda_peak
         self.lambda_layer_distribution = lambda_layer_distribution
+
+        # НОВОЕ
+        self.lambda_conditional = lambda_conditional
+
+        self.debug_every = debug_every
 
         self.gen_batch_cnt = 0
         self.disc_batch_cnt = 0
@@ -434,9 +493,7 @@ class WganEpochTrainer(GanEpochTrainer):
 
         random_dataloader_iter = iter(random_dataloader)
 
-        def get_batches(
-            real_batch
-        ) -> Tuple[torch.Tensor, torch.Tensor, Any, Any]:
+        def get_batches(real_batch):
 
             real_batch_x, real_batch_y = move_batch_to(
                 real_batch,
@@ -463,19 +520,23 @@ class WganEpochTrainer(GanEpochTrainer):
 
         critic_adv_loss_total = 0.
         critic_loss_total = 0.
+
         gen_adv_loss_total = 0.
         gen_loss_total = 0.
+
         gen_energy_loss_total = 0.
         gen_sparsity_loss_total = 0.
         gen_layer_fraction_loss_total = 0.
         gen_quantile_loss_total = 0.
-
-        # Накопление новой потери
         gen_layer_distribution_loss_total = 0.
+
+        # НОВОЕ
+        gen_conditional_loss_total = 0.
 
         regularizer_loss_total = 0.
         disc_grad_norm_total = 0.
         gen_grad_norm_total = 0.
+
         gen_center_fraction_loss_total = 0.
         gen_left_fraction_loss_total = 0.
         gen_right_fraction_loss_total = 0.
@@ -489,17 +550,22 @@ class WganEpochTrainer(GanEpochTrainer):
 
             gan_model.generator.requires_grad_(False)
 
+            # =====================================
+            # ОБУЧЕНИЕ КРИТИКА — БЕЗ ИЗМЕНЕНИЙ
+            # =====================================
+
             for t in range(self.n_critic):
 
                 self.disc_batch_cnt += 1
 
-                real_batch = next(
-                    random_dataloader_iter
-                )
+                real_batch = next(random_dataloader_iter)
 
-                gen_batch_x, real_batch_x, gen_batch_y, real_batch_y = get_batches(
-                    real_batch
-                )
+                (
+                    gen_batch_x,
+                    real_batch_x,
+                    gen_batch_y,
+                    real_batch_y
+                ) = get_batches(real_batch)
 
                 check_tensor(
                     gen_batch_x,
@@ -535,14 +601,21 @@ class WganEpochTrainer(GanEpochTrainer):
                 )
 
                 if regularizer is not None:
+
                     regularizer_loss = regularizer()
-                    regularizer_loss_total += regularizer_loss.item()
+
+                    regularizer_loss_total += (
+                        regularizer_loss.item()
+                    )
 
                     if logger is not None:
                         logger.log_metrics(
                             data={
-                                'train/discriminator/pure_loss': loss.item(),
-                                'train/discriminator/reg_loss': regularizer_loss.item()
+                                'train/discriminator/pure_loss':
+                                    loss.item(),
+
+                                'train/discriminator/reg_loss':
+                                    regularizer_loss.item()
                             },
                             period='disc_batch',
                             period_index=self.disc_batch_cnt,
@@ -566,8 +639,11 @@ class WganEpochTrainer(GanEpochTrainer):
                 if logger is not None:
                     logger.log_metrics(
                         data={
-                            'train/discriminator/batch_loss': loss.item(),
-                            'train/discriminator/batch_grad_norm': disc_grad_norm
+                            'train/discriminator/batch_loss':
+                                loss.item(),
+
+                            'train/discriminator/batch_grad_norm':
+                                disc_grad_norm
                         },
                         period='disc_batch',
                         period_index=self.disc_batch_cnt,
@@ -586,17 +662,19 @@ class WganEpochTrainer(GanEpochTrainer):
                 last_disc_real_vals = disc_real_vals
                 last_disc_gen_vals = disc_gen_vals
 
+            # =====================================
+            # ОБУЧЕНИЕ ГЕНЕРАТОРА
+            # =====================================
+
             gan_model.generator.requires_grad_(True)
-
-            # =========================
-            # generator training
-            # =========================
-
             gan_model.discriminator.requires_grad_(False)
 
-            gen_batch_x, real_batch_x, gen_batch_y, real_batch_y = get_batches(
-                generator_batch
-            )
+            (
+                gen_batch_x,
+                real_batch_x,
+                gen_batch_y,
+                real_batch_y
+            ) = get_batches(generator_batch)
 
             observations = (
                 gan_model.discriminator(
@@ -612,21 +690,15 @@ class WganEpochTrainer(GanEpochTrainer):
             adv_gen_loss = observations.mean()
 
             fake_energy = gen_batch_x.sum(
-                dim=tuple(
-                    range(1, gen_batch_x.ndim)
-                )
+                dim=tuple(range(1, gen_batch_x.ndim))
             )
 
             real_energy = real_batch_x.sum(
-                dim=tuple(
-                    range(1, real_batch_x.ndim)
-                )
+                dim=tuple(range(1, real_batch_x.ndim))
             )
 
             energy_loss = torch.mean(
-                (
-                    fake_energy - real_energy
-                ) ** 2
+                (fake_energy - real_energy) ** 2
             )
 
             sparsity_loss = gen_batch_x.abs().mean()
@@ -637,9 +709,7 @@ class WganEpochTrainer(GanEpochTrainer):
             )
 
             layer_frac_loss = (
-                center_loss
-                + left_loss
-                + right_loss
+                center_loss + left_loss + right_loss
             ) / 3.0
 
             quantile_loss = quantile_energy_loss(
@@ -664,18 +734,24 @@ class WganEpochTrainer(GanEpochTrainer):
                 gen_batch_x
             )
 
-            # =========================
-            # НОВАЯ ФУНКЦИЯ ПОТЕРЬ
-            # =========================
-
             layer_dist_loss = layer_distribution_loss(
                 real_batch_x,
                 gen_batch_x
             )
 
-            # =========================
-            # ПОЛНЫЙ LOSS ГЕНЕРАТОРА
-            # =========================
+            # =====================================
+            # НОВОЕ: УСЛОВНАЯ ФУНКЦИЯ ПОТЕРЬ
+            # =====================================
+
+            conditional_loss = conditional_energy_loss(
+                real_batch_x,
+                gen_batch_x,
+                gen_batch_y
+            )
+
+            # =====================================
+            # СУММАРНАЯ ПОТЕРЯ ГЕНЕРАТОРА
+            # =====================================
 
             gen_loss = (
                 adv_gen_loss
@@ -685,7 +761,14 @@ class WganEpochTrainer(GanEpochTrainer):
                 + self.lambda_quantile * quantile_loss
                 + self.lambda_peak * peak_loss
                 + self.lambda_layer_distribution * layer_dist_loss
+
+                # НОВОЕ
+                + self.lambda_conditional * conditional_loss
             )
+
+            # =====================================
+            # ДИАГНОСТИКА
+            # =====================================
 
             if batch_index % self.debug_every == 0:
 
@@ -728,45 +811,25 @@ class WganEpochTrainer(GanEpochTrainer):
 
                 print("\n=== ENERGY LOSS DEBUG ===")
 
-                print(
-                    "adv_gen_loss:",
-                    adv_gen_loss.item()
-                )
+                print("adv_gen_loss:", adv_gen_loss.item())
 
-                print(
-                    "energy_loss:",
-                    energy_loss.item()
-                )
-
-                print(
-                    "lambda_energy:",
-                    self.lambda_energy
-                )
+                print("energy_loss:", energy_loss.item())
+                print("lambda_energy:", self.lambda_energy)
 
                 print(
                     "lambda_energy * energy_loss:",
                     (self.lambda_energy * energy_loss).item()
                 )
 
-                print(
-                    "sparsity_loss:",
-                    sparsity_loss.item()
-                )
-
-                print(
-                    "lambda_sparsity:",
-                    self.lambda_sparsity
-                )
+                print("sparsity_loss:", sparsity_loss.item())
+                print("lambda_sparsity:", self.lambda_sparsity)
 
                 print(
                     "lambda_sparsity * sparsity_loss:",
                     (self.lambda_sparsity * sparsity_loss).item()
                 )
 
-                print(
-                    "layer_frac_loss:",
-                    layer_frac_loss.item()
-                )
+                print("layer_frac_loss:", layer_frac_loss.item())
 
                 print(
                     "lambda_layer_fraction:",
@@ -775,25 +838,20 @@ class WganEpochTrainer(GanEpochTrainer):
 
                 print(
                     "lambda_layer_fraction * layer_frac_loss:",
-                    (self.lambda_layer_fraction * layer_frac_loss).item()
+                    (
+                        self.lambda_layer_fraction
+                        * layer_frac_loss
+                    ).item()
                 )
 
-                print(
-                    "quantile_loss:",
-                    quantile_loss.item()
-                )
-
-                print(
-                    "lambda_quantile:",
-                    self.lambda_quantile
-                )
+                print("quantile_loss:", quantile_loss.item())
+                print("lambda_quantile:", self.lambda_quantile)
 
                 print(
                     "lambda_quantile * quantile_loss:",
                     (self.lambda_quantile * quantile_loss).item()
                 )
 
-                # Логирование новой потери
                 print(
                     "layer_distribution_loss:",
                     layer_dist_loss.item()
@@ -807,22 +865,28 @@ class WganEpochTrainer(GanEpochTrainer):
                     ).item()
                 )
 
-                print(
-                    "gen_loss total:",
-                    gen_loss.item()
-                )
-
-                print(
-                    "peak_loss:",
-                    peak_loss.item()
-                )
+                print("peak_loss:", peak_loss.item())
 
                 print(
                     "weighted peak_loss:",
+                    (self.lambda_peak * peak_loss).item()
+                )
+
+                # НОВОЕ
+                print(
+                    "conditional_loss:",
+                    conditional_loss.item()
+                )
+
+                print(
+                    "weighted_conditional_loss:",
                     (
-                        self.lambda_peak * peak_loss
+                        self.lambda_conditional
+                        * conditional_loss
                     ).item()
                 )
+
+                print("gen_loss total:", gen_loss.item())
 
             self.gen_batch_cnt += 1
 
@@ -850,16 +914,27 @@ class WganEpochTrainer(GanEpochTrainer):
                 layer_dist_loss.item() * len(gen_batch_x)
             )
 
+            # НОВОЕ
+            gen_conditional_loss_total += (
+                conditional_loss.item() * len(gen_batch_x)
+            )
+
             if regularizer is not None:
+
                 regularizer_loss = regularizer()
                 regularizer_loss_total += regularizer_loss.item()
 
                 if logger is not None:
                     logger.log_metrics(
                         data={
-                            'train/generator/pure_loss': adv_gen_loss.item(),
-                            'train/generator/energy_loss': energy_loss.item(),
-                            'train/generator/reg_loss': regularizer_loss.item()
+                            'train/generator/pure_loss':
+                                adv_gen_loss.item(),
+
+                            'train/generator/energy_loss':
+                                energy_loss.item(),
+
+                            'train/generator/reg_loss':
+                                regularizer_loss.item()
                         },
                         period='gen_batch',
                         period_index=self.gen_batch_cnt,
@@ -886,7 +961,12 @@ class WganEpochTrainer(GanEpochTrainer):
 
             gan_model.discriminator.requires_grad_(True)
 
+            # =====================================
+            # ЛОГИРОВАНИЕ ПО БАТЧАМ
+            # =====================================
+
             if logger is not None:
+
                 logger.log_metrics(
                     data={
                         'train/generator/batch_loss':
@@ -916,7 +996,8 @@ class WganEpochTrainer(GanEpochTrainer):
 
                         'train/generator/batch_weighted_layer_fraction_loss':
                             (
-                                self.lambda_layer_fraction * layer_frac_loss
+                                self.lambda_layer_fraction
+                                * layer_frac_loss
                             ).item(),
 
                         'train/generator/batch_quantile_loss':
@@ -924,16 +1005,27 @@ class WganEpochTrainer(GanEpochTrainer):
 
                         'train/generator/batch_weighted_quantile_loss':
                             (
-                                self.lambda_quantile * quantile_loss
+                                self.lambda_quantile
+                                * quantile_loss
                             ).item(),
 
-                        # Новая функция потерь
                         'train/generator/batch_layer_distribution_loss':
                             layer_dist_loss.item(),
 
                         'train/generator/batch_weighted_layer_distribution_loss':
                             (
-                                self.lambda_layer_distribution * layer_dist_loss
+                                self.lambda_layer_distribution
+                                * layer_dist_loss
+                            ).item(),
+
+                        # НОВОЕ
+                        'train/generator/batch_conditional_loss':
+                            conditional_loss.item(),
+
+                        'train/generator/batch_weighted_conditional_loss':
+                            (
+                                self.lambda_conditional
+                                * conditional_loss
                             ).item(),
 
                         'train/generator/batch_grad_norm':
@@ -943,7 +1035,7 @@ class WganEpochTrainer(GanEpochTrainer):
                             fake_energy.mean().item(),
 
                         'train/generator/real_energy_mean':
-                            real_energy.mean().item(),
+                            real_energy.mean().item()
                     },
                     period='gen_batch',
                     period_index=self.gen_batch_cnt,
@@ -953,10 +1045,16 @@ class WganEpochTrainer(GanEpochTrainer):
         generator_stepper.epoch_finished()
         critic_stepper.epoch_finished()
 
+        # =====================================
+        # ЛОГИРОВАНИЕ ПО ЭПОХАМ
+        # =====================================
+
         if logger is not None:
 
             if generator_stepper.scheduler is not None:
-                generator_lr = generator_stepper.scheduler.get_last_lr()
+                generator_lr = (
+                    generator_stepper.scheduler.get_last_lr()
+                )
 
                 logger.log_metrics(
                     data={'generator/lr': generator_lr},
@@ -965,7 +1063,9 @@ class WganEpochTrainer(GanEpochTrainer):
                 )
 
             if critic_stepper.scheduler is not None:
-                critic_lr = critic_stepper.scheduler.get_last_lr()
+                critic_lr = (
+                    critic_stepper.scheduler.get_last_lr()
+                )
 
                 logger.log_metrics(
                     data={'critic/lr': critic_lr},
@@ -976,13 +1076,13 @@ class WganEpochTrainer(GanEpochTrainer):
             logger.log_metrics(
                 data={
                     'train/critic/loss': (
-                        critic_loss_total /
-                        (len(train_dataset) * self.n_critic)
+                        critic_loss_total
+                        / (len(train_dataset) * self.n_critic)
                     ),
 
                     'train/critic/adv_loss': (
-                        critic_adv_loss_total /
-                        (len(train_dataset) * self.n_critic)
+                        critic_adv_loss_total
+                        / (len(train_dataset) * self.n_critic)
                     ),
 
                     'train/generator/loss':
@@ -1018,15 +1118,6 @@ class WganEpochTrainer(GanEpochTrainer):
                         / len(train_dataset)
                     ),
 
-                    'train/generator/layer_distribution_loss':
-                        gen_layer_distribution_loss_total / len(train_dataset),
-
-                    'train/generator/weighted_layer_distribution_loss': (
-                        self.lambda_layer_distribution
-                        * gen_layer_distribution_loss_total
-                        / len(train_dataset)
-                    ),
-
                     'train/generator/quantile_loss':
                         gen_quantile_loss_total / len(train_dataset),
 
@@ -1036,14 +1127,33 @@ class WganEpochTrainer(GanEpochTrainer):
                         / len(train_dataset)
                     ),
 
+                    'train/generator/layer_distribution_loss':
+                        gen_layer_distribution_loss_total / len(train_dataset),
+
+                    'train/generator/weighted_layer_distribution_loss': (
+                        self.lambda_layer_distribution
+                        * gen_layer_distribution_loss_total
+                        / len(train_dataset)
+                    ),
+
+                    # НОВОЕ
+                    'train/generator/conditional_loss':
+                        gen_conditional_loss_total / len(train_dataset),
+
+                    'train/generator/weighted_conditional_loss': (
+                        self.lambda_conditional
+                        * gen_conditional_loss_total
+                        / len(train_dataset)
+                    ),
+
                     'train/regularizer/loss': (
-                        regularizer_loss_total /
-                        (len(dataloader) * (self.n_critic + 1))
+                        regularizer_loss_total
+                        / (len(dataloader) * (self.n_critic + 1))
                     ),
 
                     'train/discriminator/grad_norm': (
-                        disc_grad_norm_total /
-                        (len(dataloader) * self.n_critic)
+                        disc_grad_norm_total
+                        / (len(dataloader) * self.n_critic)
                     ),
 
                     'train/generator/grad_norm':
@@ -1056,15 +1166,19 @@ class WganEpochTrainer(GanEpochTrainer):
                         gen_left_fraction_loss_total / len(train_dataset),
 
                     'train/generator/right_fraction_loss':
-                        gen_right_fraction_loss_total / len(train_dataset),
+                        gen_right_fraction_loss_total / len(train_dataset)
                 },
                 period='epoch',
                 commit=False
             )
 
+        # =====================================
+        # СРЕДНИЕ ПО ЭПОХЕ
+        # =====================================
+
         avg_loss_d = (
-            critic_loss_total /
-            (len(train_dataset) * self.n_critic)
+            critic_loss_total
+            / (len(train_dataset) * self.n_critic)
         )
 
         avg_loss_g = gen_loss_total / len(train_dataset)
@@ -1091,15 +1205,8 @@ class WganEpochTrainer(GanEpochTrainer):
         )
 
         avg_weighted_layer_fraction_loss = (
-            self.lambda_layer_fraction * avg_layer_fraction_loss
-        )
-
-        avg_layer_distribution_loss = (
-            gen_layer_distribution_loss_total / len(train_dataset)
-        )
-
-        avg_weighted_layer_distribution_loss = (
-            self.lambda_layer_distribution * avg_layer_distribution_loss
+            self.lambda_layer_fraction
+            * avg_layer_fraction_loss
         )
 
         avg_quantile_loss = (
@@ -1108,6 +1215,25 @@ class WganEpochTrainer(GanEpochTrainer):
 
         avg_weighted_quantile_loss = (
             self.lambda_quantile * avg_quantile_loss
+        )
+
+        avg_layer_distribution_loss = (
+            gen_layer_distribution_loss_total
+            / len(train_dataset)
+        )
+
+        avg_weighted_layer_distribution_loss = (
+            self.lambda_layer_distribution
+            * avg_layer_distribution_loss
+        )
+
+        # НОВОЕ
+        avg_conditional_loss = (
+            gen_conditional_loss_total / len(train_dataset)
+        )
+
+        avg_weighted_conditional_loss = (
+            self.lambda_conditional * avg_conditional_loss
         )
 
         avg_wd = -avg_loss_d
@@ -1147,6 +1273,16 @@ class WganEpochTrainer(GanEpochTrainer):
         )
 
         print(
+            f"  Средний quantile loss генератора: "
+            f"{avg_quantile_loss:.4f}"
+        )
+
+        print(
+            f"  Средний weighted quantile loss генератора: "
+            f"{avg_weighted_quantile_loss:.4f}"
+        )
+
+        print(
             f"  Средний layer distribution loss генератора: "
             f"{avg_layer_distribution_loss:.4f}"
         )
@@ -1156,14 +1292,15 @@ class WganEpochTrainer(GanEpochTrainer):
             f"{avg_weighted_layer_distribution_loss:.4f}"
         )
 
+        # НОВОЕ
         print(
-            f"  Средний quantile loss генератора: "
-            f"{avg_quantile_loss:.4f}"
+            f"  Средний conditional loss генератора: "
+            f"{avg_conditional_loss:.4f}"
         )
 
         print(
-            f"  Средний weighted quantile loss генератора: "
-            f"{avg_weighted_quantile_loss:.4f}"
+            f"  Средний weighted conditional loss генератора: "
+            f"{avg_weighted_conditional_loss:.4f}"
         )
 
         print(
@@ -1216,6 +1353,7 @@ def fill_result(
 
 
 class GanTrainer:
+
     def __init__(
         self,
         model_dir: ModelDir,
@@ -1257,6 +1395,7 @@ class GanTrainer:
         epoch = 1
 
         if self.use_saved_checkpoint:
+
             checkpoint = self.model_dir.get_checkpoint_state()
 
             if checkpoint is not None:
@@ -1289,6 +1428,7 @@ class GanTrainer:
         with logger_cm as logger:
 
             while epoch <= n_epochs:
+
                 print(f"ЭПОХА {epoch}/{n_epochs}")
 
                 if logger is not None:
@@ -1349,9 +1489,7 @@ class GanTrainer:
                         'critic_stepper': critic_stepper.state_dict()
                     }
 
-                    self.model_dir.save_checkpoint_state(
-                        checkpoint
-                    )
+                    self.model_dir.save_checkpoint_state(checkpoint)
 
                 yield epoch, gan_model
 
@@ -1359,6 +1497,7 @@ class GanTrainer:
             result_metrics is not None
             and results_info is not None
         ):
+
             result = results_info.get_result()
 
             metrics_values = result_metrics[1](
