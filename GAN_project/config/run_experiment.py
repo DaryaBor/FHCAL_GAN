@@ -1,165 +1,23 @@
-"""
-This file is expecting the 'pipeline' package name to be defined
-This file completely defines the experiment to run
-"""
-import os
-from random import random
-from typing import Tuple, Generator, Optional, Dict, List
+"""Active experiment: virtual 2.5 cm CNN + physical-module GNN WGAN-GP."""
+import argparse
 
-import numpy as np
-import torch
-import torch.utils.data
-
-from pipeline import data
-from pipeline import logger
-from pipeline.discriminators import CaloganPhysicsDiscriminator3D
-from pipeline.evaluation import evaluate_model
-from pipeline.experiment_setup import experiments_storage, global_config, init_logger
-from pipeline.gan import GAN
-from pipeline.generators import CaloganPhysicsGenerator3D
-from pipeline.metrics import *
-from pipeline.config import load_global_config
-from pipeline.custom_metrics import *
-from pipeline.predicates import TrainPredicate, IgnoreFirstNEpochsPredicate, EachNthEpochPredicate
-from pipeline.regularizer import *
-from pipeline.results_storage import ResultsStorage
-from pipeline.storage import ExperimentsStorage
-from pipeline.train import Stepper, WganEpochTrainer, GanTrainer
+from pipeline.fhcal_training import train
 
 
-def form_metric() -> Metric:
-    return MetricsSequence(
-        # BetaMetric(),
-        # DiscriminatorParameterMetric('r'),
-        CriticValuesDistributionMetric(values_cnt=1000),
-        PhysicsDataStatistics(
-            *[statistic_cls() for statistic_cls in PHYS_STATISTICS],
-            create_prd_energy_embed(),
-            create_conditional_prd_energy_embed(),
-            create_prd_physics_statistics(),
-            create_conditional_prd_physics_statistics(),
-        ),
-    )
-
-
-def form_metric_predicate() -> Optional[TrainPredicate]:
-    return IgnoreFirstNEpochsPredicate(0) & EachNthEpochPredicate(5)
-    # return None
-
-
-def form_result_metrics() -> Metric:
-    return MetricsSequence(
-                DataStatistics(
-                    KLDivergence(LongitudualClusterAsymmetryMetric()),
-                    KLDivergence(TransverseClusterAsymmetryMetric()),
-                    KLDivergence(ClusterLongitudualWidthMetric()),
-                    KLDivergence(ClusterTransverseWidthMetric()),
-                ),
-            )
-
-
-def form_dataset(train: bool = False) -> torch.utils.data.Dataset:
-    data_filepath = global_config.paths.data_dir_path + '/fhcal_data_muons_81619.npz'
-
-    assert os.path.exists(data_filepath), (
-        f'Dataset not found: {data_filepath}'
-    )
-
-    return data.UnifiedDatasetWrapper(data.get_physics_dataset(data_filepath, train=train))
-
-
-def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs: int = 100) -> Generator[Tuple[int, GAN], None, GAN]:
-    """
-    :return: a generator that yields (epoch number, gan_model after this epoch)
-    """
-    logger_cm_fn = init_logger(model_name)
-    metric = form_metric()
-    metric_predicate = form_metric_predicate()
-
-    train_dataset = form_dataset(train=True)
-    val_dataset = form_dataset(train=False)
-
-    # for local testing
-    val_size = int(0.1 * len(val_dataset))
-    val_dataset = torch.utils.data.Subset(val_dataset, np.arange(val_size))
-    # -------
-    noise_dimension = 50
-
-    def uniform_noise_generator(n: int) -> torch.Tensor:
-        return 2*torch.rand(size=(n, noise_dimension)) - 1  # шум с распределением [-1, 1]
-
-    module_mask = torch.tensor([
-        [1, 1, 1, 1, 1, 1, 1, 1, 1],
-        [1, 1, 1, 1, 1, 1, 1, 1, 1],
-        [0, 0, 1, 1, 1, 1, 1, 0, 0],
-        [1, 1, 1, 1, 0, 1, 1, 1, 1],
-        [0, 0, 1, 1, 1, 1, 1, 0, 0],
-        [1, 1, 1, 1, 1, 1, 1, 1, 1],
-        [1, 1, 1, 1, 1, 1, 1, 1, 1],
-    ], dtype=torch.float32)
-
-    generator = CaloganPhysicsGenerator3D(
-        noise_dim=noise_dimension,
-        module_mask=module_mask,
-    )
-    discriminator = CaloganPhysicsDiscriminator3D()
-    # discriminator = apply_normalization(discriminator, MultiplyOutputNormalizer, coef=2., is_trainable_coef=False)
-    # discriminator = apply_normalization(discriminator, WeakSpectralNormalizer, beta=2., is_trainable_beta=False)
-    # discriminator = apply_normalization(discriminator, ABCASNormalizer)
-
-    # regularizer = BasicRegularizer(lambda: sum(p.norm(2) for p in discriminator.parameters()))
-    # regularizer = PowRegularizer(regularizer, 2)
-    # regularizer = MultiplierRegularizer(regularizer, start_value=1.)
-    regularizer = None
-    # lambd = 1.
-    # normalization_loss = lambda: lambd*discriminator.coef**2
-
-    if gan_model is None:
-        gan_model = GAN(generator, discriminator, uniform_noise_generator)
-
-
-    generator_stepper = Stepper(
-      optimizer=torch.optim.RMSprop(
-          generator.parameters(),
-          lr=2e-5
-      )
-    )
-
-
-    discriminator_stepper = Stepper(
-        optimizer=torch.optim.RMSprop(
-            discriminator.parameters(),
-            lr=2e-5
-        )
-    )
-
-    epoch_trainer = WganEpochTrainer(
-        n_critic=5,
-        batch_size=100
-    )
-
-    model_dir = experiments_storage.get_model_dir(model_name)
-    trainer = GanTrainer(model_dir=model_dir, use_saved_checkpoint=True, save_checkpoint_once_in_epoch=5)
-    train_gan_generator = trainer.train(gan_model=gan_model,
-                                        train_dataset=train_dataset, val_dataset=val_dataset,
-                                        generator_stepper=generator_stepper,
-                                        critic_stepper=discriminator_stepper,
-                                        epoch_trainer=epoch_trainer,
-                                        n_epochs=n_epochs,
-                                        metric=metric, metric_predicate=metric_predicate,
-                                        logger_cm_fn=logger_cm_fn,
-                                        regularizer=regularizer)
-    return train_gan_generator, epoch_trainer
-
-
-def run() -> GAN:
-    model_name = 'physics_test_enerqy_aware'
-    gan_trainer, epoch_trainer = form_gan_trainer(model_name=model_name, n_epochs=15)
-    gan = None
-    for epoch, gan in gan_trainer:
-        pass
-    # evaluate model somehow ...
-    return gan
+def run(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--data', required=True, help='NPZ with energies and particle conditions')
+    parser.add_argument('--geometry', required=True, help='Verified physical module geometry JSON (cm)')
+    parser.add_argument('--module-map', help='Verified ID -> [row,col] JSON for legacy [N,7,9,10] NPZ')
+    parser.add_argument('--output', default='experiments/virtual25_gnn')
+    parser.add_argument('--epochs', type=int, default=100)
+    parser.add_argument('--batch-size', type=int, default=64)
+    parser.add_argument('--n-critic', type=int, default=5)
+    parser.add_argument('--val-ratio', type=float, default=.1)
+    parser.add_argument('--seed', type=int, default=2026)
+    parser.add_argument('--device', default='cpu', help='cpu or cuda[:index]')
+    parser.add_argument('--resume', action='store_true')
+    return train(parser.parse_args(argv))
 
 
 if __name__ == '__main__':

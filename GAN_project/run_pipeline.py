@@ -1,13 +1,9 @@
-def main():
-    # if there's no need to load active training config from the experiments storage,
-    # these lines may be omitted
-    model_name = 'test_model'
-    from pipeline.experiment_setup import experiments_storage
-    # experiments_storage.load_config(model_name)
-    # ------------------
+"""Run the active virtual-grid/GNN experiment without legacy logger dependencies."""
+from config.run_experiment import run
 
-    from config import run_experiment
-    run_experiment.run()
+
+def main():
+    return run()
 
 
 if __name__ == '__main__':

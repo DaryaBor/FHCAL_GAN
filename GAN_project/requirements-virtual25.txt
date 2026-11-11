@@ -1,0 +1,5 @@
+# Minimal environment for the new pipeline; no torch_geometric needed.
+numpy>=1.24
+torch>=2.0
+# Optional ROOT geometry reader:
+# uproot>=5
