@@ -91,9 +91,15 @@ class PhysicalGeometry(nn.Module):
 
 
 class VirtualCNNGenerator(nn.Module):
-    def __init__(self, geometry, condition_dim, noise_dim=64, hidden=64):
+    def __init__(self, geometry, condition_dim, noise_dim=64, hidden=64, condition_state=None):
         super().__init__()
         self.geometry, self.noise_dim = geometry, noise_dim
+        # Persist the dataset encoder for inference in the existing GAN checkpoint.
+        state = condition_state or {'mean': torch.zeros(6), 'scale': torch.ones(6),
+                                    'pdg_codes': list(range(condition_dim-6))}
+        self.register_buffer('condition_mean', state['mean'].clone())
+        self.register_buffer('condition_scale', state['scale'].clone())
+        self.register_buffer('pdg_codes', torch.tensor(state['pdg_codes'], dtype=torch.long))
         self.condition = nn.Sequential(nn.Linear(condition_dim, hidden), nn.SiLU())
         self.seed = nn.Linear(noise_dim+hidden, hidden*4*4)
         self.blocks = nn.ModuleList([nn.Sequential(nn.Conv2d(hidden, hidden, 3, padding=1),
@@ -160,10 +166,3 @@ def gradient_penalty(critic, real, fake, conditions):
     gradient = gradient*critic.geometry.layer_mask
     return (gradient.flatten(1).norm(2, dim=1)-1).square().mean()
 
-
-def critic_loss(critic, real, fake, conditions, gp_weight=10.):
-    return critic(fake.detach(), conditions).mean()-critic(real, conditions).mean()+gp_weight*gradient_penalty(critic, real, fake, conditions)
-
-
-def generator_loss(critic, fake, conditions):
-    return -critic(fake, conditions).mean()

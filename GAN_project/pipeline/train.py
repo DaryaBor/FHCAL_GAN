@@ -446,7 +446,9 @@ class WganEpochTrainer(GanEpochTrainer):
         # НОВОЕ
         lambda_conditional: float = 0.1,
 
-        debug_every: int = 50
+        debug_every: int = 50,
+        physical_modules: bool = False,
+        lambda_gp: float = 0.0
     ) -> None:
 
         self.n_critic = n_critic
@@ -463,6 +465,8 @@ class WganEpochTrainer(GanEpochTrainer):
         self.lambda_conditional = lambda_conditional
 
         self.debug_every = debug_every
+        self.physical_modules = physical_modules
+        self.lambda_gp = lambda_gp
 
         self.gen_batch_cnt = 0
         self.disc_batch_cnt = 0
@@ -600,6 +604,18 @@ class WganEpochTrainer(GanEpochTrainer):
                     loss.item() * len(gen_batch_x)
                 )
 
+                if self.lambda_gp:
+                    from pipeline.fhcal_virtual25_gnn import gradient_penalty
+                    gp = gradient_penalty(gan_model.discriminator, real_batch_x,
+                                          gen_batch_x, real_batch_y)
+                    loss = loss + self.lambda_gp * gp
+                    if logger is not None:
+                        logger.log_metrics(
+                            data={'train/discriminator/gradient_penalty': gp.item()},
+                            period='disc_batch', period_index=self.disc_batch_cnt,
+                            commit=False
+                        )
+
                 if regularizer is not None:
 
                     regularizer_loss = regularizer()
@@ -703,51 +719,60 @@ class WganEpochTrainer(GanEpochTrainer):
 
             sparsity_loss = gen_batch_x.abs().mean()
 
-            center_loss, left_loss, right_loss = layer_fraction_losses(
-                real_batch_x,
-                gen_batch_x
-            )
+            if self.physical_modules:
+                # Legacy auxiliary losses assume log1p energies on a 7x9 grid.
+                # Physical-module WGAN-GP uses the adversarial loss only.
+                zero = gen_batch_x.new_zeros(())
+                energy_loss = sparsity_loss = zero
+                center_loss = left_loss = right_loss = zero
+                layer_frac_loss = quantile_loss = peak_loss = zero
+                layer_dist_loss = conditional_loss = zero
+            else:
+                center_loss, left_loss, right_loss = layer_fraction_losses(
+                    real_batch_x,
+                    gen_batch_x
+                )
 
-            layer_frac_loss = (
-                center_loss + left_loss + right_loss
-            ) / 3.0
+                layer_frac_loss = (
+                    center_loss + left_loss + right_loss
+                ) / 3.0
 
-            quantile_loss = quantile_energy_loss(
-                real_batch_x,
-                gen_batch_x
-            )
+                quantile_loss = quantile_energy_loss(
+                    real_batch_x,
+                    gen_batch_x
+                )
 
-            gen_center_fraction_loss_total += (
-                center_loss.item() * len(gen_batch_x)
-            )
+                gen_center_fraction_loss_total += (
+                    center_loss.item() * len(gen_batch_x)
+                )
 
-            gen_left_fraction_loss_total += (
-                left_loss.item() * len(gen_batch_x)
-            )
+                gen_left_fraction_loss_total += (
+                    left_loss.item() * len(gen_batch_x)
+                )
 
-            gen_right_fraction_loss_total += (
-                right_loss.item() * len(gen_batch_x)
-            )
+                gen_right_fraction_loss_total += (
+                    right_loss.item() * len(gen_batch_x)
+                )
 
-            peak_loss = peak_concentration_loss(
-                real_batch_x,
-                gen_batch_x
-            )
+                peak_loss = peak_concentration_loss(
+                    real_batch_x,
+                    gen_batch_x
+                )
 
-            layer_dist_loss = layer_distribution_loss(
-                real_batch_x,
-                gen_batch_x
-            )
+                layer_dist_loss = layer_distribution_loss(
+                    real_batch_x,
+                    gen_batch_x
+                )
 
-            # =====================================
-            # НОВОЕ: УСЛОВНАЯ ФУНКЦИЯ ПОТЕРЬ
-            # =====================================
+                # =====================================
+                # НОВОЕ: УСЛОВНАЯ ФУНКЦИЯ ПОТЕРЬ
+                # =====================================
 
-            conditional_loss = conditional_energy_loss(
-                real_batch_x,
-                gen_batch_x,
-                gen_batch_y
-            )
+                conditional_loss = conditional_energy_loss(
+                    real_batch_x,
+                    gen_batch_x,
+                    gen_batch_y
+                )
 
             # =====================================
             # СУММАРНАЯ ПОТЕРЯ ГЕНЕРАТОРА
@@ -1518,3 +1543,4 @@ class GanTrainer:
             results_info.save_result(result)
 
         return gan_model
+

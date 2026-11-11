@@ -108,3 +108,31 @@ class ConditionEncoder:
         obj = cls.__new__(cls)
         obj.mean, obj.scale, obj.pdg_codes = state['mean'], state['scale'], state['pdg_codes']
         return obj
+
+
+class PhysicalModulesDataset(torch.utils.data.Dataset):
+    """Same (x,y) dataset contract as PhysicsDataset, with physical energies."""
+    def __init__(self, path, geometry, module_map=None, train=True, val_ratio=.1):
+        energy, values, pdg = load_events(path, geometry, module_map)
+        if len(energy) < 2 or not 0 < val_ratio < 1:
+            raise ValueError('Need at least two events and 0 < val_ratio < 1')
+        # Preserve the existing PhysicsDataset split without modifying global RNG.
+        rng = np.random.RandomState(0x3df3fa)
+        count = min(len(energy)-1, max(1, int(len(energy)*val_ratio)))
+        val_indices = rng.choice(np.arange(len(energy)), size=count, replace=False)
+        val_mask = np.zeros(len(energy), dtype=bool)
+        val_mask[val_indices] = True
+        train_indices = np.arange(len(energy))[~val_mask]
+        encoder = ConditionEncoder(values[train_indices], pdg[train_indices])
+        indices = train_indices if train else val_indices
+        self.energy = energy[indices]
+        self.conditions = encoder.transform(values[indices], pdg[indices])
+        self.condition_dim = 6 + len(encoder.pdg_codes)
+        self.condition_state = encoder.state_dict()
+        self.inverse_transform = None  # Already in original energy units.
+
+    def __len__(self):
+        return len(self.energy)
+
+    def __getitem__(self, index):
+        return self.energy[index], self.conditions[index]
