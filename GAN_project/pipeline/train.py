@@ -430,6 +430,15 @@ def conditional_energy_loss(
     return torch.stack(losses).mean()
 
 
+def gradient_penalty(critic, real, fake, conditions):
+    epsilon = torch.rand(real.size(0), 1, 1, device=real.device)
+    interpolated = (epsilon*real+(1-epsilon)*fake.detach()).requires_grad_(True)
+    score = critic(interpolated, conditions)
+    gradient = torch.autograd.grad(score.sum(), interpolated, create_graph=True)[0]
+    gradient = gradient*critic.geometry.layer_mask
+    return (gradient.flatten(1).norm(2, dim=1)-1).square().mean()
+
+
 class WganEpochTrainer(GanEpochTrainer):
 
     def __init__(
@@ -605,7 +614,6 @@ class WganEpochTrainer(GanEpochTrainer):
                 )
 
                 if self.lambda_gp:
-                    from pipeline.fhcal_virtual25_gnn import gradient_penalty
                     gp = gradient_penalty(gan_model.discriminator, real_batch_x,
                                           gen_batch_x, real_batch_y)
                     loss = loss + self.lambda_gp * gp

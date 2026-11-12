@@ -17,8 +17,6 @@ from pipeline.evaluation import evaluate_model
 from pipeline.experiment_setup import experiments_storage, global_config, init_logger
 from pipeline.gan import GAN
 from pipeline.generators import CaloganPhysicsGenerator3D
-from pipeline.fhcal_virtual25_gnn import VirtualCNNGenerator, GraphCritic
-from pipeline.fhcal_data import load_geometry, PhysicalModulesDataset
 from pipeline.metrics import *
 from pipeline.config import load_global_config
 from pipeline.custom_metrics import *
@@ -62,9 +60,9 @@ def form_dataset(train: bool = False) -> torch.utils.data.Dataset:
         f'Dataset not found: {data_filepath}'
     )
 
-    geometry = load_geometry(os.path.join(global_config.paths.data_dir_path, 'fhcal_geometry.json'))
-    dataset = PhysicalModulesDataset(
-        data_filepath, geometry,
+    geometry = data.load_geometry(os.path.join(global_config.paths.data_dir_path, 'fhcal_geometry.json'))
+    dataset = data.get_physics_dataset(
+        data_filepath, geometry=geometry,
         module_map=os.path.join(global_config.paths.data_dir_path, 'fhcal_module_map.json'),
         train=train,
     )
@@ -91,13 +89,13 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
     def normal_noise_generator(n: int) -> torch.Tensor:
         return torch.randn(n, noise_dimension)
 
-    geometry = load_geometry(os.path.join(global_config.paths.data_dir_path, 'fhcal_geometry.json'))
+    geometry = data.load_geometry(os.path.join(global_config.paths.data_dir_path, 'fhcal_geometry.json'))
     condition_dim = train_dataset.dataset.condition_dim
-    generator = VirtualCNNGenerator(
+    generator = CaloganPhysicsGenerator3D(
         geometry, condition_dim, noise_dim=noise_dimension,
         condition_state=train_dataset.dataset.condition_state,
     )
-    discriminator = GraphCritic(geometry, condition_dim)
+    discriminator = CaloganPhysicsDiscriminator3D(geometry, condition_dim)
     # discriminator = apply_normalization(discriminator, MultiplyOutputNormalizer, coef=2., is_trainable_coef=False)
     # discriminator = apply_normalization(discriminator, WeakSpectralNormalizer, beta=2., is_trainable_beta=False)
     # discriminator = apply_normalization(discriminator, ABCASNormalizer)

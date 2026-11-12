@@ -26,5 +26,63 @@
 
 На Kaggle данный код доступен в [датасете](https://kaggle.com/datasets/be3269a45379946ad67df6a1941714aaf5a6e0068f69d52c3e04c9f7fb8307b9) (актуальность не гарантируется).
 
+## Виртуальная сетка 2,5 см → GNN
 
-Новая архитектура CNN (2,5 см) → GNN: [форматы данных и необходимые настройки](VIRTUAL25_GNN.md).
+Архитектура встроена в существующий пайплайн: `run_pipeline.py` →
+`config/run_experiment.py` → `GAN`, `GanTrainer`, `WganEpochTrainer`, `Stepper`.
+Логгеры, сохранение экспериментов и формат `training_checkpoint` прежние.
+Запуск из `GAN_project`: `python run_pipeline.py`. Зависимости — существующий
+`requirements.txt`; отдельный trainer и отдельное окружение не требуются.
+
+Генератор принимает нормальный шум `[B,64]` и условия; CNN выдаёт
+неотрицательную плотность на сетке 2,5 см, матрица площадей пересечений
+агрегирует её в физические энергии `[B,54,10]`. Размеры виртуальной карты
+вычисляются из геометрии. Критик — четыре блока edge-aware GNN по физическим
+модулям с рёбрами по общим границам. REAL не дробится на виртуальные ячейки.
+
+В `WganEpochTrainer` добавлены параметры `physical_modules` и `lambda_gp`:
+для новой конфигурации GP=10 по физическим энергиям с маской слоёв;
+дополнительные потери, рассчитанные на log1p и индексную сетку `[7,9]`,
+не вычисляются. Прежний режим trainer сохраняется. Adam lr=1e-4,
+betas=(0,0.9), n_critic=5. Сеточные `PhysicsDataStatistics` отключены в активной
+конфигурации; совместимая `CriticValuesDistributionMetric` остаётся.
+
+В `global_config.paths.data_dir_path` нужны:
+
+- NPZ, путь к которому, как раньше, задаётся в `form_dataset`.
+  `EnergyDeposit[N,7,9,10]`, `ParticlePoint[N,3]`,
+  `ParticleMomentum[N,3]`, `ParticlePDG[N]`.
+- `fhcal_geometry.json`: `{"modules": [{"module_id": ..., "x": ..., "y": ...,
+  "z": ..., "width": ..., "height": ..., "layers": ...}, ...]}`.
+  54 уникальных реальных ID, 34 модуля 15×15 и 20 модулей 20×20 см.
+  Координаты центров — из ROOT; число слоёв 1..10 проверяется по `fSectVec`.
+- `fhcal_module_map.json`: `{"<real ID>": [row, col], ...}` для функции,
+  которой создан именно этот NPZ. Код проверяет коллизии и сохранение энергии,
+  но саму перестановку ID нужно сверить с кодом подготовки данных.
+
+Поддерживается также `EnergyDeposit[N,54,10]` с `ModuleIds[54]`, без карты.
+Порядок модулей сортируется по реальным ID; энергия в отсутствующих слоях — ошибка.
+Непроверенная геометрия/карта не подставляются автоматически.
+
+Условия: `(x0,y0,z0,px,py,pz)`, стандартизованные по train, плюс one-hot PDG.
+Train/validation split использует прежний seed; статистики train одинаковы
+при обоих вызовах `form_dataset`. Для inference статистики и словарь PDG
+сохраняются в буферах генератора `condition_mean`, `condition_scale`, `pdg_codes`.
+ParticlePoint — вершина генерации, не точка попадания.
+
+Новый `model_name='physics_virtual25_gnn'` отделяет несовместимые старые
+CNN-чекпойнты. После начала обучения сохраняйте те же данные, геометрию и карту
+при resume. Существующие классы CaloganPhysicsGenerator3D, CaloganPhysicsDiscriminator3D
+и PhysicsDataset теперь содержат новую реализацию; общие классы пайплайна сохранены.
+Полное обучение требует проверенной реальной геометрии. Softplus сам по себе
+не решает воспроизведение строгих нулей; виртуальная карта не является
+подтверждённой реконструкцией распределения энергии внутри модуля.
+
+Код размещён в прежних файлах:
+
+- `pipeline/generators.py`: `CaloganPhysicsGenerator3D` — виртуальная CNN и агрегация.
+- `pipeline/discriminators.py`: `CaloganPhysicsDiscriminator3D` и `MessageBlock` — GNN-критик.
+- `pipeline/data.py`: `ModuleGeometry`, `PhysicalGeometry`, загрузка геометрии,
+  конверсия NPZ, `ConditionEncoder`, `PhysicsDataset`, `get_physics_dataset`.
+- `pipeline/train.py`: gradient penalty и существующий цикл WGAN-GP.
+- `config/run_experiment.py`: выбор моделей и параметров.

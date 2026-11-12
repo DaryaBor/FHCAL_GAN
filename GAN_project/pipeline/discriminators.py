@@ -86,290 +86,41 @@ class CaloganPhysicsDiscriminator(Discriminator):
         return self.fc3(X)
 
 
-## класс с 3d сверткой
-class CaloganPhysicsDiscriminator3D(Discriminator):
+# GNN-критик по физическим модулям; прежнее имя класса сохранено.
 
-    def __init__(
-        self,
-        act_func=F.leaky_relu,
-        add_points_norms_and_angles: bool = True,
-    ):
+class MessageBlock(nn.Module):
+    def __init__(self, hidden):
         super().__init__()
+        self.message = nn.Sequential(nn.Linear(hidden*2+4, hidden), nn.SiLU(), nn.Linear(hidden, hidden))
+        self.update = nn.Sequential(nn.Linear(hidden*2, hidden), nn.SiLU(), nn.Linear(hidden, hidden))
+        self.norm = nn.LayerNorm(hidden)
 
-        self.activation = act_func
-
-        self.add_points_norms_and_angles = (
-            add_points_norms_and_angles
-        )
-
-        # =====================================================
-        # Conv3D
-        # =====================================================
-
-        self.conv1 = spectral_norm(
-            nn.Conv3d(
-                in_channels=1,
-                out_channels=32,
-                kernel_size=3,
-                stride=1,
-                padding=1,
-            )
-        )
-
-        self.conv2 = spectral_norm(
-            nn.Conv3d(
-                in_channels=32,
-                out_channels=64,
-                kernel_size=3,
-                stride=(1, 2, 2),
-                padding=1,
-            )
-        )
-
-        self.conv3 = spectral_norm(
-            nn.Conv3d(
-                in_channels=64,
-                out_channels=128,
-                kernel_size=3,
-                stride=1,
-                padding=1,
-            )
-        )
-
-        self.conv4 = spectral_norm(
-            nn.Conv3d(
-                in_channels=128,
-                out_channels=256,
-                kernel_size=3,
-                stride=1,
-                padding=1,
-            )
-        )
-
-        self.adaptive_pool = nn.AdaptiveAvgPool3d(
-            (1, 1, 1)
-        )
-
-        condition_dim = (
-            7
-            if add_points_norms_and_angles
-            else 5
-        )
-
-        # =====================================================
-        # Fully connected
-        #
-        # +10 = log_layer_energy for ten longitudinal layers
-        # +1 = log_total_energy
-        # =====================================================
-
-        self.fc1 = spectral_norm(
-            nn.Linear(
-                256
-                + condition_dim
-                + 10
-                + 1,
-                64,
-            )
-        )
-
-        self.fc2 = spectral_norm(
-            nn.Linear(
-                64,
-                32,
-            )
-        )
-
-        self.fc3 = spectral_norm(
-            nn.Linear(
-                32,
-                1,
-            )
-        )
-
-    def forward(
-        self,
-        EnergyDeposit: torch.Tensor,
-        y,
-    ) -> torch.Tensor:
-
-        point, momentum = y
-
-        if self.add_points_norms_and_angles:
-            point = aux.add_angle_and_norm(
-                point
-            )
-
-        # =====================================================
-        # 1. ПОДГОТОВКА ВХОДА ДЛЯ Conv3D
-        # =====================================================
-
-        if EnergyDeposit.ndim == 4:
-
-            if tuple(
-                EnergyDeposit.shape[1:]
-            ) != (10, 7, 9):
-
-                raise ValueError(
-                    "Ожидалась геометрия "
-                    "(batch, 10, 7, 9), "
-                    f"получена "
-                    f"{tuple(EnergyDeposit.shape)}"
-                )
-
-            energy_map = EnergyDeposit
-            X = EnergyDeposit.unsqueeze(1)
-
-        elif EnergyDeposit.ndim == 5:
-
-            if tuple(
-                EnergyDeposit.shape[1:]
-            ) != (1, 10, 7, 9):
-
-                raise ValueError(
-                    "Ожидалась геометрия "
-                    "(batch, 1, 10, 7, 9), "
-                    f"получена "
-                    f"{tuple(EnergyDeposit.shape)}"
-                )
-
-            energy_map = EnergyDeposit[:, 0]
-            X = EnergyDeposit
-
-        else:
-
-            raise ValueError(
-                "Ожидалась форма "
-                "(batch, 10, 7, 9) "
-                "или "
-                "(batch, 1, 10, 7, 9), "
-                f"получена "
-                f"{tuple(EnergyDeposit.shape)}"
-            )
+    def forward(self, h, geometry):
+        source, target = geometry.edge_index
+        edge = geometry.edge_features.expand(h.size(0), -1, -1)
+        message = self.message(torch.cat((h[:, source], h[:, target], edge), -1))
+        aggregate = torch.zeros_like(h).index_add(1, target, message)
+        degree = torch.bincount(target, minlength=h.size(1)).clamp_min(1).to(h.dtype)
+        aggregate = aggregate/degree[None, :, None]
+        return self.norm(h+self.update(torch.cat((h, aggregate), -1)))
 
 
-        # =====================================================
-        # 2. ENERGY-AWARE FEATURES
-        # =====================================================
+class CaloganPhysicsDiscriminator3D(Discriminator):
+    """Conditional GNN critic on physical modules, without sigmoid."""
+    def __init__(self, geometry, condition_dim, hidden=64, depth=4):
+        super().__init__()
+        self.geometry = geometry
+        self.condition = nn.Sequential(nn.Linear(condition_dim, hidden), nn.SiLU())
+        self.input = nn.Linear(geometry.max_layers*2+1+6+hidden, hidden)
+        self.blocks = nn.ModuleList([MessageBlock(hidden) for _ in range(depth)])
+        self.output = nn.Sequential(nn.Linear(hidden*2, hidden), nn.SiLU(), nn.Linear(hidden, 1))
 
-        # energy_map has shape (B, 10, 7, 9) and contains
-        # log1p(E). Layer sums must be calculated in physical
-        # energy, not by summing logarithms.
-        physical_energy = torch.expm1(
-            energy_map
-        ).clamp_min(0.0)
-
-        # Sum over detector rows and columns:
-        # (B, 10, 7, 9) -> (B, 10)
-        layer_energy = physical_energy.sum(
-            dim=(2, 3)
-        )
-
-        # Sum over the ten longitudinal layers:
-        # (B, 10) -> (B, 1)
-        total_energy = layer_energy.sum(
-            dim=1,
-            keepdim=True,
-        )
-
-        # Log scaling prevents the energy features from
-        # dominating the learned convolutional features.
-        log_layer_energy = torch.log1p(
-            layer_energy
-        )
-
-        log_total_energy = torch.log1p(
-            total_energy
-        )
-
-        # (B, 10) + (B, 1) -> (B, 11)
-        energy_features = torch.cat(
-            [
-                log_layer_energy,
-                log_total_energy,
-            ],
-            dim=1,
-        )
-
-
-        # =====================================================
-        # 3. Conv3D
-        # =====================================================
-
-        X = F.leaky_relu(
-            self.conv1(X),
-            negative_slope=0.2,
-        )
-
-        X = F.leaky_relu(
-            self.conv2(X),
-            negative_slope=0.2,
-        )
-
-        X = F.leaky_relu(
-            self.conv3(X),
-            negative_slope=0.2,
-        )
-
-        X = F.leaky_relu(
-            self.conv4(X),
-            negative_slope=0.2,
-        )
-
-
-        # =====================================================
-        # 4. Global pooling
-        # =====================================================
-
-        X = self.adaptive_pool(X)
-
-        X = X.flatten(
-            start_dim=1
-        )
-
-        # X:
-        # (B, 256)
-
-
-        # =====================================================
-        # 5. CONDITIONS
-        # =====================================================
-
-        condition = torch.cat(
-            [
-                momentum,
-                point,
-            ],
-            dim=1,
-        )
-
-
-        # =====================================================
-        # 6. ENERGY-AWARE CONCATENATION
-        # =====================================================
-
-        X = torch.cat(
-            [
-                X,
-                condition,
-                energy_features,
-            ],
-            dim=1,
-        )
-
-
-        # =====================================================
-        # 7. Critic output
-        # =====================================================
-
-        X = F.leaky_relu(
-            self.fc1(X),
-            negative_slope=0.2,
-        )
-
-        X = F.leaky_relu(
-            self.fc2(X),
-            negative_slope=0.2,
-        )
-
-        return self.fc3(X)
+    def forward(self, energy, conditions):
+        energy = energy*self.geometry.layer_mask
+        b, m, _ = energy.shape
+        h = self.input(torch.cat((energy, torch.log1p(energy.clamp_min(0)), energy.sum(-1, keepdim=True),
+                                  self.geometry.node_features.expand(b, -1, -1),
+                                  self.condition(conditions)[:, None].expand(-1, m, -1)), -1))
+        for block in self.blocks:
+            h = block(h, self.geometry)
+        return self.output(torch.cat((h.mean(1), h.sum(1)), -1)).squeeze(-1)
