@@ -60,10 +60,11 @@ def form_dataset(train: bool = False) -> torch.utils.data.Dataset:
         f'Dataset not found: {data_filepath}'
     )
 
-    geometry = data.load_geometry(os.path.join(global_config.paths.data_dir_path, 'fhcal_geometry.json'))
+    # Report-19 geometry/map; combined datasets must use the same configuration.
+    geometry, module_map = data.fhcal_geometry_report_19()
     dataset = data.get_physics_dataset(
         data_filepath, geometry=geometry,
-        module_map=os.path.join(global_config.paths.data_dir_path, 'fhcal_module_map.json'),
+        module_map=module_map,
         train=train,
     )
     return data.UnifiedDatasetWrapper(dataset)
@@ -89,7 +90,7 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
     def normal_noise_generator(n: int) -> torch.Tensor:
         return torch.randn(n, noise_dimension)
 
-    geometry = data.load_geometry(os.path.join(global_config.paths.data_dir_path, 'fhcal_geometry.json'))
+    geometry, _ = data.fhcal_geometry_report_19()
     condition_dim = train_dataset.dataset.condition_dim
     generator = CaloganPhysicsGenerator3D(
         geometry, condition_dim, noise_dim=noise_dimension,
@@ -157,7 +158,7 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
 
 
 def run() -> GAN:
-    model_name = 'physics_virtual25_dilated_gnn_losses'
+    model_name = 'physics_virtual25_dilated_gnn_layers7_10'
     gan_trainer, epoch_trainer = form_gan_trainer(model_name=model_name, n_epochs=15)
     gan = None
     for epoch, gan in gan_trainer:

@@ -253,6 +253,41 @@ class PhysicalGeometry(nn.Module):
             raise ValueError('Expected density [B,L,H,W] matching geometry')
         return torch.einsum('mp,blp->bml', self.overlap, density.flatten(2)) * self.layer_mask
 
+
+def fhcal_geometry_report_19():
+    """Geometry and exact legacy map from fhcal_check_report.txt (muons/19).
+
+    ROOT: 120000 events with stable IDs/centers; NPZ: 119999 nonzero events.
+    fSectVec lengths: IDs 1..34 have 7 layers, IDs 35..54 have 10.
+    Widths 15/20 cm and cm units retain the architecture assumptions; the report
+    did not independently measure these sizes. This is a named configuration,
+    not an inferred geometry for arbitrary NPZ files/runs.
+    """
+    z = 202.22000122070312
+    # IDs 1..34: rows run from +Y to -Y, columns from +X to -X.
+    centers = [(x, y)
+               for y in (45., 30., 15., 0., -15., -30., -45.)
+               for x in (30., 15., 0., -15., -30.)
+               if (x, y) != (0., 0.)]
+    # IDs 35..44 are on the right; IDs 45..54 are on the left.
+    centers += [(x, y)
+                for side_x in ((67.5, 47.5), (-47.5, -67.5))
+                for y in (40., 20., 0., -20., -40.)
+                for x in side_x]
+    modules = []
+    module_map = {}
+    for mid, (x, y) in enumerate(centers, start=1):
+        size = 15. if mid <= 34 else 20.
+        layers = 7 if mid <= 34 else 10
+        modules.append(ModuleGeometry(mid, x, y, z, size, size, layers))
+        # Reproduce the checked NPZ writer, including floor, clipping and Y flip.
+        # These are storage indices, not physical virtual-cell coordinates.
+        col = min(8, max(0, math.floor((x + 67.5) / 15.)))
+        row = 6 - min(6, max(0, math.floor((y + 45.) / (90. / 7.))))
+        module_map[mid] = (row, col)
+    return PhysicalGeometry(modules), module_map
+
+
 def load_geometry(path):
     with open(path) as stream:
         config = json.load(stream)
@@ -262,7 +297,7 @@ def load_geometry(path):
     return PhysicalGeometry(modules)
 
 
-def geometry_from_root(path, module_metadata, tree_name='bmndata', branch_prefix='FHCalEvent.fModulesVec'):
+def geometry_from_root(path, module_metadata, tree_name='bmndata', branch_prefix='FHCalEvent/fModulesVec/fModulesVec'):
     """Read centers/IDs; sizes and VERIFIED fSectVec layer counts are required.
 
     module_metadata: {real_id: {'width': ..., 'height': ..., 'layers': ...}}.
@@ -303,6 +338,7 @@ def npz_grid_to_real_modules(energy, geometry, module_to_grid):
 
 
 def load_events(path, geometry, mapping_path=None):
+    """mapping_path accepts a JSON path or an explicitly selected ID -> (r,c) dict."""
     with np.load(path, allow_pickle=False) as data:
         energy = np.asarray(data['EnergyDeposit'], dtype=np.float32)
         point = np.asarray(data['ParticlePoint'], dtype=np.float32)
@@ -311,8 +347,12 @@ def load_events(path, geometry, mapping_path=None):
         if energy.ndim == 4:
             if mapping_path is None:
                 raise ValueError('Legacy NPZ requires module_map with verified module ID -> [row,col]')
-            with open(mapping_path) as stream:
-                energy = npz_grid_to_real_modules(energy, geometry, json.load(stream))
+            if isinstance(mapping_path, dict):
+                module_map = mapping_path
+            else:
+                with open(mapping_path) as stream:
+                    module_map = json.load(stream)
+            energy = npz_grid_to_real_modules(energy, geometry, module_map)
         else:
             # Native physical format must carry its ordering explicitly.
             ids = list(np.asarray(data['ModuleIds']).tolist())
