@@ -134,11 +134,12 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
         batch_size=100,
         physical_modules=True,
         lambda_gp=10.0,
-        lambda_layer_fraction=0.0,
-        lambda_quantile=0.0,
-        lambda_peak=0.0,
-        lambda_layer_distribution=0.0,
-        lambda_conditional=0.0
+        lambda_energy=0.0,
+        lambda_sparsity=0.0,
+        lambda_layer_fraction=0.5,
+        lambda_quantile=0.04,
+        lambda_peak=0.1,
+        lambda_layer_distribution=0.5
     )
 
     model_dir = experiments_storage.get_model_dir(model_name)
@@ -156,7 +157,7 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
 
 
 def run() -> GAN:
-    model_name = 'physics_virtual25_dilated_gnn'
+    model_name = 'physics_virtual25_dilated_gnn_losses'
     gan_trainer, epoch_trainer = form_gan_trainer(model_name=model_name, n_epochs=15)
     gan = None
     for epoch, gan in gan_trainer:
@@ -167,4 +168,5 @@ def run() -> GAN:
 
 if __name__ == '__main__':
     run()
+
 

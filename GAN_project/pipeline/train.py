@@ -96,7 +96,52 @@ def check_tensor(x: torch.Tensor, prefix: str = ''):
     raise ValueError(msg)
 
 
-def _layer_profile_loss(real_layer, fake_layer, eps=1e-8):
+def _loss_energy_values(x, geometry=None):
+    """Physical [B,M,L] or legacy log1p [B,L,Y,X], never expm1 physical E."""
+    if x.ndim == 3:
+        energy = x.clamp_min(0.0)
+        if geometry is not None:
+            if x.shape[1:] != geometry.layer_mask.shape:
+                raise ValueError('Energy dimensions disagree with physical geometry')
+            energy = energy * geometry.layer_mask
+        return energy
+    if x.ndim == 4 and geometry is None:
+        return torch.expm1(x).clamp_min(0.0)
+    raise ValueError('Expected physical [B,M,L] or legacy log1p [B,L,Y,X]')
+
+
+def _physical_region_profiles(energy, geometry):
+    """Center: 15 cm modules; sides: 20 cm modules left/right of center.
+
+    Preserve all existing layers of each region; padded layers are excluded.
+    """
+    if geometry is None:
+        raise ValueError('Physical regional losses require module geometry')
+    modules = geometry.modules
+    central = torch.tensor([m.width == m.height == 15 for m in modules],
+                           device=energy.device)
+    if not central.any():
+        raise ValueError('No central 15x15 modules found')
+    central_x = [m.x for m, selected in zip(modules, central.tolist()) if selected]
+    center_x = (min(central_x) + max(central_x)) / 2
+    x = energy.new_tensor([m.x for m in modules])
+    regions = (central, (~central) & (x < center_x), (~central) & (x >= center_x))
+    profiles = []
+    for region in regions:
+        active_layers = geometry.layer_mask[region].bool().any(0)
+        profiles.append(energy[:, region, :].sum(1)[:, active_layers])
+    return tuple(profiles)
+
+
+def _layer_profile_loss(real_layer, fake_layer, eps=1e-8, distribution=False):
+    if fake_layer.size(1) == 0:
+        return fake_layer.sum() * 0.0
+    if distribution:
+        # Compare distributions, not arbitrary REAL/FAKE event pairs.
+        real_fraction = real_layer.detach() / real_layer.detach().sum(1, keepdim=True).clamp_min(eps)
+        fake_fraction = fake_layer / fake_layer.sum(1, keepdim=True).clamp_min(eps)
+        return (fake_fraction.sort(dim=0).values - real_fraction.sort(dim=0).values).square().mean()
+
 
     real_total = real_layer.sum(dim=1, keepdim=True)
     fake_total = fake_layer.sum(dim=1, keepdim=True)
@@ -121,7 +166,13 @@ def _layer_profile_loss(real_layer, fake_layer, eps=1e-8):
     )
 
 
-def layer_fraction_losses(real_x, fake_x, eps=1e-8):
+def layer_fraction_losses(real_x, fake_x, eps=1e-8, geometry=None):
+    if real_x.ndim == 3:
+        real_profiles = _physical_region_profiles(_loss_energy_values(real_x, geometry), geometry)
+        fake_profiles = _physical_region_profiles(_loss_energy_values(fake_x, geometry), geometry)
+        return tuple(_layer_profile_loss(r, f, eps, distribution=True)
+                     for r, f in zip(real_profiles, fake_profiles))
+
 
     real_energy = torch.expm1(real_x).clamp_min(0.0)
     fake_energy = torch.expm1(fake_x).clamp_min(0.0)
@@ -150,10 +201,10 @@ def layer_fraction_losses(real_x, fake_x, eps=1e-8):
     return center_loss, left_loss, right_loss
 
 
-def layer_fraction_loss(real_x, fake_x, eps=1e-8):
+def layer_fraction_loss(real_x, fake_x, eps=1e-8, geometry=None):
 
     center_loss, left_loss, right_loss = layer_fraction_losses(
-        real_x, fake_x, eps
+        real_x, fake_x, eps, geometry=geometry
     )
 
     return (
@@ -161,23 +212,15 @@ def layer_fraction_loss(real_x, fake_x, eps=1e-8):
     ) / 3.0
 
 
-def quantile_energy_loss(real_x, fake_x, eps=1e-8):
+def quantile_energy_loss(real_x, fake_x, eps=1e-8, geometry=None):
     """
     Сравнение квантилей полной физической энергии
-    REAL и FAKE в log1p-шкале.
+    Физический вход [B,M,L]; сравнение полной энергии в log1p-шкале.
+    Для прежнего входа [B,L,Y,X] сначала восстанавливается энергия.
     """
 
-    real_energy = torch.log1p(
-        torch.expm1(real_x).sum(
-            dim=tuple(range(1, real_x.ndim))
-        ) + eps
-    ).detach()
-
-    fake_energy = torch.log1p(
-        torch.expm1(fake_x).sum(
-            dim=tuple(range(1, fake_x.ndim))
-        ) + eps
-    )
+    real_energy = torch.log1p(_loss_energy_values(real_x, geometry).flatten(1).sum(1) + eps).detach()
+    fake_energy = torch.log1p(_loss_energy_values(fake_x, geometry).flatten(1).sum(1) + eps)
 
     quantiles = torch.tensor(
         [
@@ -212,14 +255,15 @@ def quantile_energy_loss(real_x, fake_x, eps=1e-8):
 def peak_concentration_loss(
     real_x: torch.Tensor,
     fake_x: torch.Tensor,
-    eps: float = 1e-8
+    eps: float = 1e-8,
+    geometry=None,
 ) -> torch.Tensor:
 
-    real_e = torch.expm1(real_x)
-    fake_e = torch.expm1(fake_x)
-
-    real_2d = real_e.sum(dim=1)
-    fake_2d = fake_e.sum(dim=1)
+    real_e = _loss_energy_values(real_x, geometry)
+    fake_e = _loss_energy_values(fake_x, geometry)
+    # One transverse signal per real module, keeping both module sizes.
+    real_2d = real_e.sum(dim=-1 if real_x.ndim == 3 else 1)
+    fake_2d = fake_e.sum(dim=-1 if fake_x.ndim == 3 else 1)
 
     real_flat = real_2d.flatten(start_dim=1)
     fake_flat = fake_2d.flatten(start_dim=1)
@@ -229,7 +273,7 @@ def peak_concentration_loss(
 
     losses = []
 
-    for k in [1, 3, 5]:
+    for k in sorted({min(k, real_flat.size(1)) for k in (1, 3, 5)}):
 
         real_top = torch.topk(
             real_flat, k=k, dim=1
@@ -267,11 +311,22 @@ def peak_concentration_loss(
 # W1 между распределениями абсолютной энергии слоёв
 # ==========================================================
 
-def layer_distribution_loss(real_x, fake_x):
+def layer_distribution_loss(real_x, fake_x, geometry=None):
     """
     Сравнение распределений энергии по продольным слоям
     отдельно для центральной, левой и правой областей FHCal.
     """
+
+    if real_x.ndim == 3:
+        real_profiles = _physical_region_profiles(_loss_energy_values(real_x, geometry), geometry)
+        fake_profiles = _physical_region_profiles(_loss_energy_values(fake_x, geometry), geometry)
+        losses = []
+        for real_layers, fake_layers in zip(real_profiles, fake_profiles):
+            if fake_layers.size(1):
+                real_sorted = torch.log1p(real_layers).detach().sort(dim=0).values
+                fake_sorted = torch.log1p(fake_layers).sort(dim=0).values
+                losses.append((fake_sorted - real_sorted).abs().mean())
+        return torch.stack(losses).mean() if losses else fake_x.sum() * 0.0
 
     real_e = torch.expm1(real_x).clamp_min(0.0)
     fake_e = torch.expm1(fake_x).clamp_min(0.0)
@@ -314,120 +369,6 @@ def layer_distribution_loss(real_x, fake_x):
     return torch.stack(region_losses).mean()
 
 
-# ==========================================================
-# НОВОЕ: УСЛОВНАЯ ФУНКЦИЯ ПОТЕРЬ
-# ==========================================================
-
-def conditional_energy_loss(
-    real_x,
-    fake_x,
-    conditions,
-    min_group_size=8
-):
-    """
-    Сравнивает распределения полной физической энергии
-    REAL и FAKE отдельно для групп с близкими X и Y.
-
-    real_x, fake_x:
-        (B, 10, 7, 9), log1p(E)
-
-    conditions:
-        (ParticlePoint, ParticleMomentum)
-
-    Группы:
-        X <= median(X), Y <= median(Y)
-        X <= median(X), Y > median(Y)
-        X > median(X),  Y <= median(Y)
-        X > median(X),  Y > median(Y)
-
-    Используется W1 в log1p-шкале.
-    """
-
-    # Входные координаты частицы
-    point = conditions[0][:, :2].detach()
-
-    if (
-        len(point) != len(real_x)
-        or len(real_x) != len(fake_x)
-    ):
-        raise ValueError(
-            "REAL, FAKE и условия должны "
-            "иметь одинаковый batch size"
-        )
-
-    # Полная физическая энергия каждого события
-    real_total = (
-        torch.expm1(real_x)
-        .clamp_min(0.0)
-        .flatten(start_dim=1)
-        .sum(dim=1)
-    )
-
-    fake_total = (
-        torch.expm1(fake_x)
-        .clamp_min(0.0)
-        .flatten(start_dim=1)
-        .sum(dim=1)
-    )
-
-    # Сравнение в log1p-шкале
-    real_log = torch.log1p(real_total).detach()
-    fake_log = torch.log1p(fake_total)
-
-    x = point[:, 0]
-    y = point[:, 1]
-
-    # Разделяем текущий батч на две части
-    # по каждой координате
-    x_median = x.median()
-    y_median = y.median()
-
-    losses = []
-
-    for is_right in (False, True):
-
-        if is_right:
-            x_mask = x > x_median
-        else:
-            x_mask = x <= x_median
-
-        for is_top in (False, True):
-
-            if is_top:
-                y_mask = y > y_median
-            else:
-                y_mask = y <= y_median
-
-            mask = x_mask & y_mask
-
-            # Пропускаем группы с малым числом событий
-            if int(mask.sum().item()) < min_group_size:
-                continue
-
-            # REAL и FAKE имеют одинаковые условия
-            # и одинаковую маску событий
-            real_sorted = torch.sort(
-                real_log[mask]
-            ).values
-
-            fake_sorted = torch.sort(
-                fake_log[mask]
-            ).values
-
-            # Одномерное расстояние W1
-            group_loss = torch.abs(
-                fake_sorted - real_sorted
-            ).mean()
-
-            losses.append(group_loss)
-
-    # Если все группы слишком маленькие,
-    # возвращаем нулевой loss с сохранением графа
-    if not losses:
-        return fake_log.sum() * 0.0
-
-    # Равный вес группам, прошедшим проверку
-    return torch.stack(losses).mean()
 
 
 def gradient_penalty(critic, real, fake, conditions):
@@ -452,9 +393,6 @@ class WganEpochTrainer(GanEpochTrainer):
         lambda_peak: float = 0.1,
         lambda_layer_distribution: float = 0.5,
 
-        # НОВОЕ
-        lambda_conditional: float = 0.1,
-
         debug_every: int = 50,
         physical_modules: bool = False,
         lambda_gp: float = 0.0
@@ -469,9 +407,6 @@ class WganEpochTrainer(GanEpochTrainer):
         self.lambda_quantile = lambda_quantile
         self.lambda_peak = lambda_peak
         self.lambda_layer_distribution = lambda_layer_distribution
-
-        # НОВОЕ
-        self.lambda_conditional = lambda_conditional
 
         self.debug_every = debug_every
         self.physical_modules = physical_modules
@@ -543,8 +478,6 @@ class WganEpochTrainer(GanEpochTrainer):
         gen_quantile_loss_total = 0.
         gen_layer_distribution_loss_total = 0.
 
-        # НОВОЕ
-        gen_conditional_loss_total = 0.
 
         regularizer_loss_total = 0.
         disc_grad_norm_total = 0.
@@ -721,66 +654,32 @@ class WganEpochTrainer(GanEpochTrainer):
                 dim=tuple(range(1, real_batch_x.ndim))
             )
 
-            energy_loss = torch.mean(
-                (fake_energy - real_energy) ** 2
-            )
-
-            sparsity_loss = gen_batch_x.abs().mean()
-
+            geometry = gan_model.generator.geometry if self.physical_modules else None
             if self.physical_modules:
-                # Legacy auxiliary losses assume log1p energies on a 7x9 grid.
-                # Physical-module WGAN-GP uses the adversarial loss only.
-                zero = gen_batch_x.new_zeros(())
-                energy_loss = sparsity_loss = zero
-                center_loss = left_loss = right_loss = zero
-                layer_frac_loss = quantile_loss = peak_loss = zero
-                layer_dist_loss = conditional_loss = zero
+                real_e = _loss_energy_values(real_batch_x, geometry)
+                fake_e = _loss_energy_values(gen_batch_x, geometry)
+                real_energy = real_e.sum(dim=(1, 2))
+                fake_energy = fake_e.sum(dim=(1, 2))
+                # Match the mean energy, without pairing independent stochastic events.
+                energy_loss = (fake_energy.mean() - real_energy.detach().mean()).square()
+                # Preserve the old L1(log1p(E)) penalty, excluding nonexistent slots.
+                valid_count = (geometry.layer_mask.sum() * len(fake_e)).clamp_min(1)
+                sparsity_loss = torch.log1p(fake_e).sum() / valid_count
             else:
-                center_loss, left_loss, right_loss = layer_fraction_losses(
-                    real_batch_x,
-                    gen_batch_x
-                )
+                energy_loss = (fake_energy - real_energy).square().mean()
+                sparsity_loss = gen_batch_x.abs().mean()
 
-                layer_frac_loss = (
-                    center_loss + left_loss + right_loss
-                ) / 3.0
+            center_loss, left_loss, right_loss = layer_fraction_losses(
+                real_batch_x, gen_batch_x, geometry=geometry,
+            )
+            layer_frac_loss = (center_loss + left_loss + right_loss) / 3.0
+            quantile_loss = quantile_energy_loss(real_batch_x, gen_batch_x, geometry=geometry)
+            peak_loss = peak_concentration_loss(real_batch_x, gen_batch_x, geometry=geometry)
+            layer_dist_loss = layer_distribution_loss(real_batch_x, gen_batch_x, geometry=geometry)
 
-                quantile_loss = quantile_energy_loss(
-                    real_batch_x,
-                    gen_batch_x
-                )
-
-                gen_center_fraction_loss_total += (
-                    center_loss.item() * len(gen_batch_x)
-                )
-
-                gen_left_fraction_loss_total += (
-                    left_loss.item() * len(gen_batch_x)
-                )
-
-                gen_right_fraction_loss_total += (
-                    right_loss.item() * len(gen_batch_x)
-                )
-
-                peak_loss = peak_concentration_loss(
-                    real_batch_x,
-                    gen_batch_x
-                )
-
-                layer_dist_loss = layer_distribution_loss(
-                    real_batch_x,
-                    gen_batch_x
-                )
-
-                # =====================================
-                # НОВОЕ: УСЛОВНАЯ ФУНКЦИЯ ПОТЕРЬ
-                # =====================================
-
-                conditional_loss = conditional_energy_loss(
-                    real_batch_x,
-                    gen_batch_x,
-                    gen_batch_y
-                )
+            gen_center_fraction_loss_total += center_loss.item() * len(gen_batch_x)
+            gen_left_fraction_loss_total += left_loss.item() * len(gen_batch_x)
+            gen_right_fraction_loss_total += right_loss.item() * len(gen_batch_x)
 
             # =====================================
             # СУММАРНАЯ ПОТЕРЯ ГЕНЕРАТОРА
@@ -794,9 +693,6 @@ class WganEpochTrainer(GanEpochTrainer):
                 + self.lambda_quantile * quantile_loss
                 + self.lambda_peak * peak_loss
                 + self.lambda_layer_distribution * layer_dist_loss
-
-                # НОВОЕ
-                + self.lambda_conditional * conditional_loss
             )
 
             # =====================================
@@ -905,19 +801,7 @@ class WganEpochTrainer(GanEpochTrainer):
                     (self.lambda_peak * peak_loss).item()
                 )
 
-                # НОВОЕ
-                print(
-                    "conditional_loss:",
-                    conditional_loss.item()
-                )
 
-                print(
-                    "weighted_conditional_loss:",
-                    (
-                        self.lambda_conditional
-                        * conditional_loss
-                    ).item()
-                )
 
                 print("gen_loss total:", gen_loss.item())
 
@@ -947,10 +831,6 @@ class WganEpochTrainer(GanEpochTrainer):
                 layer_dist_loss.item() * len(gen_batch_x)
             )
 
-            # НОВОЕ
-            gen_conditional_loss_total += (
-                conditional_loss.item() * len(gen_batch_x)
-            )
 
             if regularizer is not None:
 
@@ -1049,16 +929,6 @@ class WganEpochTrainer(GanEpochTrainer):
                             (
                                 self.lambda_layer_distribution
                                 * layer_dist_loss
-                            ).item(),
-
-                        # НОВОЕ
-                        'train/generator/batch_conditional_loss':
-                            conditional_loss.item(),
-
-                        'train/generator/batch_weighted_conditional_loss':
-                            (
-                                self.lambda_conditional
-                                * conditional_loss
                             ).item(),
 
                         'train/generator/batch_grad_norm':
@@ -1169,16 +1039,6 @@ class WganEpochTrainer(GanEpochTrainer):
                         / len(train_dataset)
                     ),
 
-                    # НОВОЕ
-                    'train/generator/conditional_loss':
-                        gen_conditional_loss_total / len(train_dataset),
-
-                    'train/generator/weighted_conditional_loss': (
-                        self.lambda_conditional
-                        * gen_conditional_loss_total
-                        / len(train_dataset)
-                    ),
-
                     'train/regularizer/loss': (
                         regularizer_loss_total
                         / (len(dataloader) * (self.n_critic + 1))
@@ -1260,14 +1120,7 @@ class WganEpochTrainer(GanEpochTrainer):
             * avg_layer_distribution_loss
         )
 
-        # НОВОЕ
-        avg_conditional_loss = (
-            gen_conditional_loss_total / len(train_dataset)
-        )
 
-        avg_weighted_conditional_loss = (
-            self.lambda_conditional * avg_conditional_loss
-        )
 
         avg_wd = -avg_loss_d
 
@@ -1325,16 +1178,7 @@ class WganEpochTrainer(GanEpochTrainer):
             f"{avg_weighted_layer_distribution_loss:.4f}"
         )
 
-        # НОВОЕ
-        print(
-            f"  Средний conditional loss генератора: "
-            f"{avg_conditional_loss:.4f}"
-        )
 
-        print(
-            f"  Средний weighted conditional loss генератора: "
-            f"{avg_weighted_conditional_loss:.4f}"
-        )
 
         print(
             f"  Grad norm критика: "
@@ -1551,4 +1395,5 @@ class GanTrainer:
             results_info.save_result(result)
 
         return gan_model
+
 
