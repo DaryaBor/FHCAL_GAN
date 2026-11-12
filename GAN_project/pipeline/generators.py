@@ -198,9 +198,16 @@ class CaloganPhysicsGenerator(Generator):
 # ============================================================
 
 class CaloganPhysicsGenerator3D(Generator):
-    """CNN on a virtual 2.5 cm grid, integrated into physical module energies."""
-    def __init__(self, geometry, condition_dim, noise_dim=64, hidden=64, condition_state=None):
+    """Fixed-resolution XY CNN with dilated blocks and physical integration.
+
+    Every spatial tensor uses geometry.height x geometry.width from the start.
+    The historical class name is retained; layers are Conv2d, depth is channels.
+    """
+    def __init__(self, geometry, condition_dim, noise_dim=64, hidden=64,
+                 condition_state=None, dilation_rates=(1, 2, 4)):
         super().__init__()
+        if len(dilation_rates) != 3 or any(not isinstance(d, int) or d < 1 for d in dilation_rates):
+            raise ValueError('dilation_rates must contain three positive integers')
         self.geometry, self.noise_dim = geometry, noise_dim
         # Persist the dataset encoder for inference in the existing GAN checkpoint.
         state = condition_state or {'mean': torch.zeros(6), 'scale': torch.ones(6),
@@ -208,22 +215,56 @@ class CaloganPhysicsGenerator3D(Generator):
         self.register_buffer('condition_mean', state['mean'].clone())
         self.register_buffer('condition_scale', state['scale'].clone())
         self.register_buffer('pdg_codes', torch.tensor(state['pdg_codes'], dtype=torch.long))
-        self.condition = nn.Sequential(nn.Linear(condition_dim, hidden), nn.SiLU())
-        self.seed = nn.Linear(noise_dim+hidden, hidden*4*4)
-        self.blocks = nn.ModuleList([nn.Sequential(nn.Conv2d(hidden, hidden, 3, padding=1),
-                                                 nn.SiLU(), nn.Conv2d(hidden, hidden, 3, padding=1)) for _ in range(3)])
-        self.output = nn.Sequential(nn.Conv2d(hidden+6, hidden, 3, padding=1), nn.SiLU(),
-                                    nn.Conv2d(hidden, geometry.max_layers, 1), nn.Softplus())
-        self.hidden = hidden
+
+        self.condition = nn.Sequential(
+            nn.Linear(condition_dim, hidden),
+            nn.SiLU(),
+        )
+        # Shared event features + six spatial geometry channels at full H x W.
+        self.input = nn.Sequential(
+            nn.Conv2d(noise_dim + hidden + 6, hidden, kernel_size=3, padding=1),
+            nn.SiLU(),
+        )
+
+        # Each block combines expanded spatial coverage with local processing.
+        # padding=dilation preserves H x W for a 3x3 kernel, stride=1.
+        self.block1 = nn.Sequential(
+            nn.Conv2d(hidden, hidden, kernel_size=3,
+                      dilation=dilation_rates[0], padding=dilation_rates[0]),
+            nn.SiLU(),
+            nn.Conv2d(hidden, hidden, kernel_size=3, padding=1),
+        )
+        self.block2 = nn.Sequential(
+            nn.Conv2d(hidden, hidden, kernel_size=3,
+                      dilation=dilation_rates[1], padding=dilation_rates[1]),
+            nn.SiLU(),
+            nn.Conv2d(hidden, hidden, kernel_size=3, padding=1),
+        )
+        self.block3 = nn.Sequential(
+            nn.Conv2d(hidden, hidden, kernel_size=3,
+                      dilation=dilation_rates[2], padding=dilation_rates[2]),
+            nn.SiLU(),
+            nn.Conv2d(hidden, hidden, kernel_size=3, padding=1),
+        )
+        self.output = nn.Sequential(
+            nn.Conv2d(hidden, hidden, kernel_size=3, padding=1),
+            nn.SiLU(),
+            nn.Conv2d(hidden, geometry.max_layers, kernel_size=1),
+            nn.Softplus(),
+        )
 
     def virtual_density(self, noise, conditions):
-        h = self.seed(torch.cat((noise, self.condition(conditions)), -1)).reshape(-1, self.hidden, 4, 4)
-        for block in self.blocks:
-            h = F.interpolate(h, scale_factor=2, mode='bilinear', align_corners=False)
-            h = F.silu(h+block(h))
-        h = F.interpolate(h, size=(self.geometry.height, self.geometry.width), mode='bilinear', align_corners=False)
-        static = self.geometry.grid_features.expand(h.size(0), -1, -1, -1)
-        return self.output(torch.cat((h, static), 1))*self.geometry.virtual_mask
+        # The same global noise/conditions are available at every physical position.
+        event = torch.cat((noise, self.condition(conditions)), dim=1)
+        event_map = event[:, :, None, None].expand(
+            -1, -1, self.geometry.height, self.geometry.width,
+        )
+        static = self.geometry.grid_features.expand(noise.size(0), -1, -1, -1)
+        h = self.input(torch.cat((event_map, static), dim=1))
+        h = F.silu(h + self.block1(h))
+        h = F.silu(h + self.block2(h))
+        h = F.silu(h + self.block3(h))
+        return self.output(h) * self.geometry.virtual_mask
 
     def forward(self, noise, conditions):
         return self.geometry.aggregate(self.virtual_density(noise, conditions))
