@@ -97,7 +97,11 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
         condition_state=train_dataset.dataset.condition_state,
         dilation_rates=(1, 2, 4),
     )
-    discriminator = CaloganPhysicsDiscriminator3D(geometry, condition_dim)
+    discriminator = CaloganPhysicsDiscriminator3D(
+        geometry, condition_dim,
+        neighbor_radius=25.0,
+        active_energy_threshold=0.0,
+    )
     # discriminator = apply_normalization(discriminator, MultiplyOutputNormalizer, coef=2., is_trainable_coef=False)
     # discriminator = apply_normalization(discriminator, WeakSpectralNormalizer, beta=2., is_trainable_beta=False)
     # discriminator = apply_normalization(discriminator, ABCASNormalizer)
@@ -158,7 +162,7 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
 
 
 def run() -> GAN:
-    model_name = 'physics_virtual25_dilated_gnn_layers7_10'
+    model_name = 'physics_virtual25_dilated_gnn_layers7_10_active_radius25'
     gan_trainer, epoch_trainer = form_gan_trainer(model_name=model_name, n_epochs=15)
     gan = None
     for epoch, gan in gan_trainer:
