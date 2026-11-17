@@ -27,6 +27,9 @@ from pipeline.storage import ExperimentsStorage
 from pipeline.train import Stepper, WganEpochTrainer, GanTrainer
 
 
+DEFAULT_DATA_FILENAME = 'fhcal_data_muons_81619.npz'
+
+
 def form_metric() -> Metric:
     return MetricsSequence(
         # BetaMetric(),
@@ -54,7 +57,8 @@ def form_result_metrics() -> Metric:
 
 
 def form_dataset(train: bool = False) -> torch.utils.data.Dataset:
-    data_filepath = global_config.paths.data_dir_path + '/fhcal_data_muons_81619.npz'
+    data_filename = os.environ.get('FHCAL_DATA_FILENAME', DEFAULT_DATA_FILENAME)
+    data_filepath = os.path.join(global_config.paths.data_dir_path, data_filename)
 
     assert os.path.exists(data_filepath), (
         f'Dataset not found: {data_filepath}'
@@ -169,6 +173,11 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
 
 def run() -> GAN:
     model_name = 'physics_virtual25_dilated_gnn_layers7_10_active_radius20_trainmin'
+    data_filename = os.environ.get('FHCAL_DATA_FILENAME', DEFAULT_DATA_FILENAME)
+    if data_filename != DEFAULT_DATA_FILENAME:
+        model_name += '_' + os.path.splitext(os.path.basename(data_filename))[0]
+    model_name = os.environ.get('FHCAL_MODEL_NAME', model_name)
+    print(f'Model: {model_name}; dataset: {data_filename}')
     gan_trainer, epoch_trainer = form_gan_trainer(model_name=model_name, n_epochs=15)
     gan = None
     for epoch, gan in gan_trainer:
