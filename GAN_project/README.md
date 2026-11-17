@@ -210,3 +210,47 @@ GP=10 сохранён для WGAN-GP. `lambda_gp=0` отключает его; 
 это отдельный эксперимент, без автоматического продолжения вариантов с другими порогами.
 Веса задаются в
 `config/run_experiment.py`.
+
+### Одновременное обучение на разных датасетах
+
+`FHCAL_DATA_FILENAME` выбирает NPZ внутри `data_dir_path`,
+`FHCAL_MODEL_NAME` задаёт отдельный каталог эксперимента/чекпойнта и имя
+логирования. Без переменных сохраняются прежний датасет и имя эксперимента.
+Если выбран другой датасет без явного имени модели, его имя автоматически
+добавляется к стандартному имени эксперимента. Порог и нормализация условий
+вычисляются отдельно по train каждого датасета.
+
+Из `GAN_project` распакуйте оба архива; имена NPZ внутри различаются:
+
+```bash
+unzip -n data/fhcal_data_muons_81619.zip -d data
+unzip -n data/fhcal_data_muons_81619_large.zip -d data
+```
+
+В существующем `train.sbatch` проверяйте выбранный файл:
+
+```bash
+data_file="${FHCAL_DATA_FILENAME:-fhcal_data_muons_81619.npz}"
+if [[ ! -f "data/$data_file" ]]; then
+    echo "Не найден файл data/$data_file"
+    exit 2
+fi
+```
+
+Один `train.sbatch` с `#SBATCH --gpus=1` и `srun python -u run_pipeline.py`
+можно отправить дважды, передав разные параметры:
+
+```bash
+sbatch -A proj_1855 --job-name=bmn-base \
+  --export=ALL,FHCAL_DATA_FILENAME=fhcal_data_muons_81619.npz,FHCAL_MODEL_NAME=muons_81619_r20_trainmin train.sbatch
+sbatch -A proj_1855 --job-name=bmn-large \
+  --export=ALL,FHCAL_DATA_FILENAME=fhcal_data_muons_81619_large.npz,FHCAL_MODEL_NAME=muons_81619_large_r20_trainmin train.sbatch
+```
+
+Каждая задача использует одну GPU и пишет в свой `experiments/<model_name>`.
+Одновременно работающие задачи должны иметь разные имена моделей. Если
+каталог с выбранным именем уже содержит checkpoint, обучение продолжится
+из него. Для нового обучения используйте новое имя. Файл Slurm-лога должен
+содержать `%j`, например `#SBATCH --output=slurm-%x-%j.out`.
+Одновременное выполнение зависит от доступности двух GPU и лимитов проекта;
+постановка двух задач сама по себе не гарантирует их одновременный старт.
