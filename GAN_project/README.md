@@ -241,10 +241,12 @@ fi
 можно отправить дважды, передав разные параметры:
 
 ```bash
-sbatch -A proj_1855 --job-name=bmn-base \
-  --export=ALL,FHCAL_DATA_FILENAME=fhcal_data_muons_81619.npz,FHCAL_MODEL_NAME=muons_81619_r20_trainmin train.sbatch
-sbatch -A proj_1855 --job-name=bmn-large \
-  --export=ALL,FHCAL_DATA_FILENAME=fhcal_data_muons_81619_large.npz,FHCAL_MODEL_NAME=muons_81619_large_r20_trainmin train.sbatch
+FHCAL_DATA_FILENAME=fhcal_data_muons_81619.npz \
+FHCAL_MODEL_NAME=muons_81619_r20_trainmin \
+  sbatch -A proj_1855 --export=ALL --job-name=bmn-base train.sbatch
+FHCAL_DATA_FILENAME=fhcal_data_muons_81619_large.npz \
+FHCAL_MODEL_NAME=muons_81619_large_r20_trainmin \
+  sbatch -A proj_1855 --export=ALL --job-name=bmn-large train.sbatch
 ```
 
 Каждая задача использует одну GPU и пишет в свой `experiments/<model_name>`.
