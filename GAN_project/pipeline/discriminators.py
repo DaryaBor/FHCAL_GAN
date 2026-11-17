@@ -108,7 +108,7 @@ class MessageBlock(nn.Module):
 class CaloganPhysicsDiscriminator3D(Discriminator):
     """Conditional radius GNN on the active physical modules of each event."""
     def __init__(self, geometry, condition_dim, hidden=64, depth=4,
-                 neighbor_radius=25.0, active_energy_threshold=1e-6):
+                 neighbor_radius=20.0, active_energy_threshold=4.99271773151122e-5):
         super().__init__()
         if not math.isfinite(neighbor_radius) or neighbor_radius <= 0:
             raise ValueError('neighbor_radius must be finite and positive (cm)')
@@ -138,7 +138,8 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
     def forward(self, energy, conditions):
         energy = energy*self.geometry.layer_mask
         b, m, _ = energy.shape
-        active = energy.sum(-1) > self.active_energy_threshold
+        module_energy = energy.sum(-1)
+        active = (module_energy > 0) & (module_energy >= self.active_energy_threshold)
         batch_index, module_index = active.nonzero(as_tuple=True)
         active_energy = energy[batch_index, module_index]
         h = self.input(torch.cat((active_energy, torch.log1p(active_energy.clamp_min(0)),
