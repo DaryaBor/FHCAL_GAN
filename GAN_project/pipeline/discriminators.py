@@ -106,9 +106,9 @@ class MessageBlock(nn.Module):
 
 
 class CaloganPhysicsDiscriminator3D(Discriminator):
-    """Conditional radius GNN on the positive-energy modules of each event."""
+    """Conditional radius GNN on the active physical modules of each event."""
     def __init__(self, geometry, condition_dim, hidden=64, depth=4,
-                 neighbor_radius=25.0, active_energy_threshold=0.0):
+                 neighbor_radius=25.0, active_energy_threshold=1e-6):
         super().__init__()
         if not math.isfinite(neighbor_radius) or neighbor_radius <= 0:
             raise ValueError('neighbor_radius must be finite and positive (cm)')
