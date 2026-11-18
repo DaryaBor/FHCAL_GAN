@@ -98,25 +98,23 @@ class MessageBlock(nn.Module):
 
     def forward(self, h, edge_index, edge_features):
         source, target = edge_index
-        message = self.message(torch.cat((h[source], h[target], edge_features), -1))
-        aggregate = torch.zeros_like(h).index_add(0, target, message)
-        degree = torch.bincount(target, minlength=h.size(0)).clamp_min(1).to(h.dtype)
-        aggregate = aggregate/degree[:, None]
+        edge = edge_features.expand(h.size(0), -1, -1)
+        message = self.message(torch.cat((h[:, source], h[:, target], edge), -1))
+        aggregate = torch.zeros_like(h).index_add(1, target, message)
+        degree = torch.bincount(target, minlength=h.size(1)).clamp_min(1).to(h.dtype)
+        aggregate = aggregate/degree[None, :, None]
         return self.norm(h+self.update(torch.cat((h, aggregate), -1)))
 
 
 class CaloganPhysicsDiscriminator3D(Discriminator):
-    """Conditional radius GNN on the active physical modules of each event."""
+    """Conditional radius GNN on all physical modules, including zero-energy ones."""
     def __init__(self, geometry, condition_dim, hidden=64, depth=4,
-                 neighbor_radius=20.0, active_energy_threshold=4.99271773151122e-5):
+                 neighbor_radius=20.0):
         super().__init__()
         if not math.isfinite(neighbor_radius) or neighbor_radius <= 0:
             raise ValueError('neighbor_radius must be finite and positive (cm)')
-        if not math.isfinite(active_energy_threshold) or active_energy_threshold < 0:
-            raise ValueError('active_energy_threshold must be finite and nonnegative')
         self.geometry = geometry
         self.neighbor_radius = float(neighbor_radius)
-        self.active_energy_threshold = float(active_energy_threshold)
         xy = geometry.node_features[:, :2] * 100
         delta = xy[None, :, :] - xy[:, None, :]
         distance = delta.norm(dim=-1)
@@ -138,24 +136,10 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
     def forward(self, energy, conditions):
         energy = energy*self.geometry.layer_mask
         b, m, _ = energy.shape
-        module_energy = energy.sum(-1)
-        active = (module_energy > 0) & (module_energy >= self.active_energy_threshold)
-        batch_index, module_index = active.nonzero(as_tuple=True)
-        active_energy = energy[batch_index, module_index]
-        h = self.input(torch.cat((active_energy, torch.log1p(active_energy.clamp_min(0)),
-                                  active_energy.sum(-1, keepdim=True),
-                                  self.geometry.node_features[module_index],
-                                  self.condition(conditions)[batch_index]), -1))
-
-        node_index = torch.full_like(active, -1, dtype=torch.long)
-        node_index[batch_index, module_index] = torch.arange(h.size(0), device=energy.device)
-        source, target = self.radius_edge_index
-        edge_batch, edge_id = (active[:, source] & active[:, target]).nonzero(as_tuple=True)
-        edge_index = torch.stack((node_index[edge_batch, source[edge_id]],
-                                  node_index[edge_batch, target[edge_id]]))
-        edge_features = self.radius_edge_features[edge_id]
+        h = self.input(torch.cat((energy, torch.log1p(energy.clamp_min(0)),
+                                  energy.sum(-1, keepdim=True),
+                                  self.geometry.node_features.expand(b, -1, -1),
+                                  self.condition(conditions)[:, None].expand(-1, m, -1)), -1))
         for block in self.blocks:
-            h = block(h, edge_index, edge_features)
-        total = h.new_zeros(b, h.size(-1)).index_add(0, batch_index, h)
-        count = active.sum(1, keepdim=True).clamp_min(1).to(h.dtype)
-        return self.output(torch.cat((total/count, total), -1)).squeeze(-1)
+            h = block(h, self.radius_edge_index, self.radius_edge_features)
+        return self.output(torch.cat((h.mean(1), h.sum(1)), -1)).squeeze(-1)
