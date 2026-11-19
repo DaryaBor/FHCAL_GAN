@@ -1,15 +1,32 @@
-from typing import Dict, Optional, Tuple
+from __future__ import annotations
 
-import torch.utils.data
+from typing import TYPE_CHECKING
 
-from pipeline.gan import GAN
-from pipeline.logger import GANLogger
-from pipeline.metrics import Metric, unravel_metric_results
-from pipeline.results_storage import ResultsStorage
+import numpy as np
+
+if TYPE_CHECKING:
+    import torch.utils.data
+
+    from pipeline.gan import GAN
+    from pipeline.logger import GANLogger
+    from pipeline.metrics import Metric
+
+
+def apply_module_energy_cut(energy: np.ndarray, threshold: float) -> np.ndarray:
+    """Return [events, modules, layers] with whole subthreshold modules zeroed."""
+    energy = np.asarray(energy)
+    if energy.ndim != 3:
+        raise ValueError("Expected energies with shape [events, modules, layers]")
+    if not np.isfinite(threshold) or threshold < 0:
+        raise ValueError("The module energy threshold must be finite and nonnegative")
+    keep = energy.sum(axis=-1) >= threshold
+    return np.where(keep[..., None], energy, 0)
 
 
 def evaluate_model(gan_model: GAN, val_dataset: torch.utils.data.Dataset,
                    metric: Metric, logger: GANLogger) -> None:
+    from pipeline.metrics import unravel_metric_results
+
     metric_results = metric.evaluate(gan_model=gan_model, val_dataset=val_dataset)
 
     new_data = unravel_metric_results(metric, metric_results)
