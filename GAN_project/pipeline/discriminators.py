@@ -1,5 +1,4 @@
 from abc import abstractmethod
-import math
 from typing import Tuple, Any
 from torch.nn.utils import spectral_norm
 import torch
@@ -96,9 +95,9 @@ class MessageBlock(nn.Module):
         self.update = nn.Sequential(nn.Linear(hidden*2, hidden), nn.SiLU(), nn.Linear(hidden, hidden))
         self.norm = nn.LayerNorm(hidden)
 
-    def forward(self, h, edge_index, edge_features):
-        source, target = edge_index
-        edge = edge_features.expand(h.size(0), -1, -1)
+    def forward(self, h, geometry):
+        source, target = geometry.edge_index
+        edge = geometry.edge_features.expand(h.size(0), -1, -1)
         message = self.message(torch.cat((h[:, source], h[:, target], edge), -1))
         aggregate = torch.zeros_like(h).index_add(1, target, message)
         degree = torch.bincount(target, minlength=h.size(1)).clamp_min(1).to(h.dtype)
@@ -107,27 +106,10 @@ class MessageBlock(nn.Module):
 
 
 class CaloganPhysicsDiscriminator3D(Discriminator):
-    """Conditional radius GNN on all physical modules, including zero-energy ones."""
-    def __init__(self, geometry, condition_dim, hidden=64, depth=4,
-                 neighbor_radius=20.0):
+    """Conditional GNN critic on physical modules, without sigmoid."""
+    def __init__(self, geometry, condition_dim, hidden=64, depth=4):
         super().__init__()
-        if not math.isfinite(neighbor_radius) or neighbor_radius <= 0:
-            raise ValueError('neighbor_radius must be finite and positive (cm)')
         self.geometry = geometry
-        self.neighbor_radius = float(neighbor_radius)
-        xy = geometry.node_features[:, :2] * 100
-        delta = xy[None, :, :] - xy[:, None, :]
-        distance = delta.norm(dim=-1)
-        neighbors = (distance > 0) & (distance <= self.neighbor_radius + 1e-4)
-        source, target = neighbors.nonzero(as_tuple=True)
-        shared = torch.zeros_like(distance)
-        shared[geometry.edge_index[0], geometry.edge_index[1]] = geometry.edge_features[:, 3]
-        edge_features = torch.cat((delta[source, target]/100,
-                                   distance[source, target, None]/100,
-                                   shared[source, target, None]), -1)
-        # Derived from geometry/config; keep the existing checkpoint tensor keys.
-        self.register_buffer('radius_edge_index', torch.stack((source, target)), persistent=False)
-        self.register_buffer('radius_edge_features', edge_features, persistent=False)
         self.condition = nn.Sequential(nn.Linear(condition_dim, hidden), nn.SiLU())
         self.input = nn.Linear(geometry.max_layers*2+1+6+hidden, hidden)
         self.blocks = nn.ModuleList([MessageBlock(hidden) for _ in range(depth)])
@@ -136,10 +118,9 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
     def forward(self, energy, conditions):
         energy = energy*self.geometry.layer_mask
         b, m, _ = energy.shape
-        h = self.input(torch.cat((energy, torch.log1p(energy.clamp_min(0)),
-                                  energy.sum(-1, keepdim=True),
+        h = self.input(torch.cat((energy, torch.log1p(energy.clamp_min(0)), energy.sum(-1, keepdim=True),
                                   self.geometry.node_features.expand(b, -1, -1),
                                   self.condition(conditions)[:, None].expand(-1, m, -1)), -1))
         for block in self.blocks:
-            h = block(h, self.radius_edge_index, self.radius_edge_features)
+            h = block(h, self.geometry)
         return self.output(torch.cat((h.mean(1), h.sum(1)), -1)).squeeze(-1)
