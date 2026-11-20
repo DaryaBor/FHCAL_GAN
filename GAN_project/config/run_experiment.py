@@ -101,10 +101,7 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
         condition_state=train_dataset.dataset.condition_state,
         dilation_rates=(1, 2, 4),
     )
-    discriminator = CaloganPhysicsDiscriminator3D(
-        geometry, condition_dim,
-        neighbor_radius=20.0,
-    )
+    discriminator = CaloganPhysicsDiscriminator3D(geometry, condition_dim)
     # discriminator = apply_normalization(discriminator, MultiplyOutputNormalizer, coef=2., is_trainable_coef=False)
     # discriminator = apply_normalization(discriminator, WeakSpectralNormalizer, beta=2., is_trainable_beta=False)
     # discriminator = apply_normalization(discriminator, ABCASNormalizer)
@@ -165,7 +162,7 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
 
 
 def run() -> GAN:
-    model_name = 'physics_virtual25_dilated_gnn_layers7_10_radius20_allnodes'
+    model_name = 'physics_virtual25_dilated_gnn_layers7_10_contact_allnodes'
     data_filename = os.environ.get('FHCAL_DATA_FILENAME', DEFAULT_DATA_FILENAME)
     if data_filename != DEFAULT_DATA_FILENAME:
         model_name += '_' + os.path.splitext(os.path.basename(data_filename))[0]
