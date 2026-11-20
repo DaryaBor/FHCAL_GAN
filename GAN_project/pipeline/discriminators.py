@@ -86,41 +86,89 @@ class CaloganPhysicsDiscriminator(Discriminator):
         return self.fc3(X)
 
 
-# GNN-критик по физическим модулям; прежнее имя класса сохранено.
-
 class MessageBlock(nn.Module):
     def __init__(self, hidden):
         super().__init__()
-        self.message = nn.Sequential(nn.Linear(hidden*2+4, hidden), nn.SiLU(), nn.Linear(hidden, hidden))
-        self.update = nn.Sequential(nn.Linear(hidden*2, hidden), nn.SiLU(), nn.Linear(hidden, hidden))
+        edge_feature_count = 4
+        message_input_size = 2 * hidden + edge_feature_count
+        update_input_size = 2 * hidden
+
+        self.message = nn.Sequential(
+            nn.Linear(message_input_size, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, hidden),
+        )
+        self.update = nn.Sequential(
+            nn.Linear(update_input_size, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, hidden),
+        )
         self.norm = nn.LayerNorm(hidden)
 
     def forward(self, h, geometry):
         source, target = geometry.edge_index
-        edge = geometry.edge_features.expand(h.size(0), -1, -1)
-        message = self.message(torch.cat((h[:, source], h[:, target], edge), -1))
-        aggregate = torch.zeros_like(h).index_add(1, target, message)
-        degree = torch.bincount(target, minlength=h.size(1)).clamp_min(1).to(h.dtype)
-        aggregate = aggregate/degree[None, :, None]
-        return self.norm(h+self.update(torch.cat((h, aggregate), -1)))
+        edge_features = geometry.edge_features.expand(h.size(0), -1, -1)
+        source_features = h[:, source]
+        target_features = h[:, target]
+
+        message_inputs = torch.cat(
+            (source_features, target_features, edge_features),
+            dim=-1,
+        )
+        messages = self.message(message_inputs)
+
+        message_sums = torch.zeros_like(h).index_add(1, target, messages)
+        neighbor_counts = torch.bincount(target, minlength=h.size(1))
+        neighbor_counts = neighbor_counts.clamp_min(1).to(h.dtype)
+        mean_messages = message_sums / neighbor_counts[None, :, None]
+
+        update_inputs = torch.cat((h, mean_messages), dim=-1)
+        updates = self.update(update_inputs)
+        return self.norm(h + updates)
 
 
 class CaloganPhysicsDiscriminator3D(Discriminator):
-    """Conditional GNN critic on physical modules, without sigmoid."""
     def __init__(self, geometry, condition_dim, hidden=64, depth=4):
         super().__init__()
         self.geometry = geometry
-        self.condition = nn.Sequential(nn.Linear(condition_dim, hidden), nn.SiLU())
-        self.input = nn.Linear(geometry.max_layers*2+1+6+hidden, hidden)
-        self.blocks = nn.ModuleList([MessageBlock(hidden) for _ in range(depth)])
-        self.output = nn.Sequential(nn.Linear(hidden*2, hidden), nn.SiLU(), nn.Linear(hidden, 1))
+        energy_feature_count = 2 * geometry.max_layers + 1
+        geometry_feature_count = 6
+        node_input_size = energy_feature_count + geometry_feature_count + hidden
+
+        self.condition = nn.Sequential(
+            nn.Linear(condition_dim, hidden),
+            nn.SiLU(),
+        )
+        self.input = nn.Linear(node_input_size, hidden)
+        self.blocks = nn.ModuleList(
+            [MessageBlock(hidden) for _ in range(depth)]
+        )
+        self.output = nn.Sequential(
+            nn.Linear(2 * hidden, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, 1),
+        )
 
     def forward(self, energy, conditions):
-        energy = energy*self.geometry.layer_mask
-        b, m, _ = energy.shape
-        h = self.input(torch.cat((energy, torch.log1p(energy.clamp_min(0)), energy.sum(-1, keepdim=True),
-                                  self.geometry.node_features.expand(b, -1, -1),
-                                  self.condition(conditions)[:, None].expand(-1, m, -1)), -1))
+        masked_energy = energy * self.geometry.layer_mask
+        batch_size, module_count, _ = masked_energy.shape
+        log_energy = torch.log1p(masked_energy.clamp_min(0))
+        module_energy = masked_energy.sum(dim=-1, keepdim=True)
+
+        geometry_features = self.geometry.node_features.expand(batch_size, -1, -1)
+        condition_features = self.condition(conditions)
+        condition_features = condition_features[:, None].expand(-1, module_count, -1)
+
+        node_inputs = torch.cat(
+            (masked_energy, log_energy, module_energy, geometry_features, condition_features),
+            dim=-1,
+        )
+        node_features = self.input(node_inputs)
         for block in self.blocks:
-            h = block(h, self.geometry)
-        return self.output(torch.cat((h.mean(1), h.sum(1)), -1)).squeeze(-1)
+            node_features = block(node_features, self.geometry)
+
+        mean_features = node_features.mean(dim=1)
+        sum_features = node_features.sum(dim=1)
+        event_features = torch.cat((mean_features, sum_features), dim=-1)
+        scores = self.output(event_features)
+        return scores.squeeze(-1)
