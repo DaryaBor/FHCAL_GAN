@@ -30,9 +30,9 @@
 
 Архитектура встроена в существующий пайплайн: `run_pipeline.py` →
 `config/run_experiment.py` → `GAN`, `GanTrainer`, `WganEpochTrainer`, `Stepper`.
-Логгеры, сохранение экспериментов и формат `training_checkpoint` прежние.
-Запуск из `GAN_project`: `python run_pipeline.py`. Зависимости — существующий
-`requirements.txt`; отдельный trainer и отдельное окружение не требуются.
+Запуск из `GAN_project` командой `python run_pipeline.py`. В текущем окружении
+обучения установите PyTorch Geometric командой
+`python -m pip install torch-geometric==2.5.3`. Версия указана в `requirements.txt`.
 
 Генератор принимает нормальный шум `[B,64]` и условия. Их общий вектор
 распространяется по полной карте `[H,W]` и сразу объединяется с шестью каналами
@@ -49,8 +49,11 @@
 `dilation_rates=(1,2,4)` задаются в `config/run_experiment.py`.
 CNN выдаёт неотрицательную плотность на сетке 2,5 см, матрица площадей пересечений
 агрегирует её в физические энергии `[B,54,10]`. Размеры виртуальной карты
-вычисляются из геометрии. Критик — четыре блока edge-aware GNN по физическим
-модулям с общей боковой границей. REAL не дробится на виртуальные ячейки.
+вычисляются из геометрии. Критик использует четыре блока `GINEConv` с
+остаточной связью и `LayerNorm`. Батч передаётся как один граф из отдельных
+событий. Для последовательных батчей одного размера переиспользуются
+индексы рёбер, признаки рёбер и принадлежность узлов событиям.
+`global_mean_pool` и `global_add_pool` собирают признаки по каждому событию.
 
 Критик использует контактный граф из коммита `61fb497`. Пары соседних
 модулей имеют общую боковую границу ненулевой длины. Для каждой пары
@@ -107,10 +110,10 @@ Train/validation split использует прежний seed; статист�
 сохраняются в буферах генератора `condition_mean`, `condition_scale`, `pdg_codes`.
 ParticlePoint — вершина генерации, не точка попадания.
 
-Имя по умолчанию `physics_virtual25_dilated_gnn_layers7_10_contact_allnodes` выделяет отдельный каталог
-для нового запуска с контактным графом. При возобновлении обучения сохраняйте
-те же данные, геометрию и правило соседства. Существующие классы CaloganPhysicsGenerator3D, CaloganPhysicsDiscriminator3D
-и PhysicsDataset теперь содержат новую реализацию; общие классы пайплайна сохранены.
+Для GINE используется отдельный каталог эксперимента с именем по умолчанию
+`physics_virtual25_dilated_gnn_layers7_10_gine_contact_allnodes`. При передаче
+`FHCAL_MODEL_NAME` укажите новое имя для первого запуска GINE, поскольку
+возобновление требует чекпоинта с весами GINE.
 Вычисления всех блоков идут на полном разрешении: расход памяти зависит от
 `H,W` и batch size. Полное обучение требует проверенной реальной геометрии. Softplus сам по себе
 не решает воспроизведение строгих нулей; виртуальная карта не является
@@ -119,7 +122,7 @@ ParticlePoint — вершина генерации, не точка попад�
 Код размещён в прежних файлах:
 
 - `pipeline/generators.py`: `CaloganPhysicsGenerator3D` — виртуальная CNN и агрегация.
-- `pipeline/discriminators.py`: `CaloganPhysicsDiscriminator3D` и `MessageBlock` — GNN-критик.
+- `pipeline/discriminators.py`: `CaloganPhysicsDiscriminator3D` и `GINEBlock` — GNN-критик.
 - `pipeline/data.py`: `ModuleGeometry`, `PhysicalGeometry`, загрузка геометрии,
   конверсия NPZ, `ConditionEncoder`, `PhysicsDataset`, `get_physics_dataset`.
 - `pipeline/train.py`: gradient penalty и существующий цикл WGAN-GP.
@@ -188,10 +191,10 @@ fi
 
 ```bash
 FHCAL_DATA_FILENAME=fhcal_data_muons_81619.npz \
-FHCAL_MODEL_NAME=muons_81619_contact_allnodes \
+FHCAL_MODEL_NAME=muons_81619_gine_contact_allnodes \
   sbatch -A proj_1855 --export=ALL --job-name=bmn-base train.sbatch
 FHCAL_DATA_FILENAME=fhcal_data_muons_81619_large.npz \
-FHCAL_MODEL_NAME=muons_81619_large_contact_allnodes \
+FHCAL_MODEL_NAME=muons_81619_large_gine_contact_allnodes \
   sbatch -A proj_1855 --export=ALL --job-name=bmn-large train.sbatch
 ```
 

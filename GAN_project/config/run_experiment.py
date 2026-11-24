@@ -162,7 +162,7 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
 
 
 def run() -> GAN:
-    model_name = 'physics_virtual25_dilated_gnn_layers7_10_contact_allnodes'
+    model_name = 'physics_virtual25_dilated_gnn_layers7_10_gine_contact_allnodes'
     data_filename = os.environ.get('FHCAL_DATA_FILENAME', DEFAULT_DATA_FILENAME)
     if data_filename != DEFAULT_DATA_FILENAME:
         model_name += '_' + os.path.splitext(os.path.basename(data_filename))[0]
