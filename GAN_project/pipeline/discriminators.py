@@ -37,11 +37,18 @@ class GINEBlock(nn.Module):
 
 
 class CaloganPhysicsDiscriminator3D(Discriminator):
-    def __init__(self, geometry, condition_dim, hidden=64, depth=4):
+    GRAPH_TYPES = ('contact', 'radius20', 'knn4')
+
+    def __init__(self, geometry, condition_dim, hidden=64, depth=4, *, graph=None):
         super().__init__()
         self.geometry = geometry
+        self._configured_graph = graph
+        self.graph = 'contact' if graph is None else graph
+        edge_index, edge_features = self._build_graph()
+        self.register_buffer('_edge_index', edge_index, persistent=False)
+        self.register_buffer('_edge_features', edge_features, persistent=False)
         self._graph_batch = None
-        self.register_load_state_dict_post_hook(self._clear_graph_batch)
+        self.register_load_state_dict_post_hook(self._reload_graph)
         energy_feature_count = 2 * geometry.max_layers + 1
         geometry_feature_count = 6
         node_input_size = energy_feature_count + geometry_feature_count + hidden
@@ -60,12 +67,64 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
             nn.Linear(hidden, 1),
         )
 
-    def _clear_graph_batch(self, module, incompatible_keys):
+    def _build_graph(self):
+        if self.graph not in self.GRAPH_TYPES:
+            raise ValueError(
+                f'Unknown FHCal graph: {self.graph!r}; expected one of {self.GRAPH_TYPES}'
+            )
+
+        contact_edges = self.geometry.edge_index
+        contact_features = self.geometry.edge_features
+        if self.graph == 'contact':
+            return contact_edges, contact_features
+
+        centers = contact_features.new_tensor(
+            [(module.x, module.y) for module in self.geometry.modules],
+            dtype=torch.float64,
+        )
+        offsets = centers[:, None, :] - centers[None, :, :]
+        distances = offsets.norm(dim=-1)
+        distances.fill_diagonal_(float('inf'))
+
+        if self.graph == 'knn4':
+            neighbor_count = min(4, len(centers) - 1)
+            sources = distances.argsort(dim=1, stable=True)[:, :neighbor_count].flatten()
+            targets = torch.arange(len(centers), device=centers.device)
+            targets = targets.repeat_interleave(neighbor_count)
+        else:
+            targets, sources = (distances <= 20.0 + 1e-4).nonzero(as_tuple=True)
+
+        shared_sides = torch.zeros_like(distances)
+        shared_sides[contact_edges[1], contact_edges[0]] = contact_features[:, 3].to(distances.dtype)
+        edge_features = torch.cat((
+            offsets[targets, sources] / 100,
+            distances[targets, sources, None] / 100,
+            shared_sides[targets, sources, None],
+        ), dim=1).to(contact_features)
+        return torch.stack((sources, targets)), edge_features
+
+    def get_extra_state(self):
+        return self.graph
+
+    def set_extra_state(self, graph):
+        if self._configured_graph is not None and graph != self._configured_graph:
+            raise RuntimeError(
+                f'Checkpoint graph {graph!r} differs from the configured graph {self._configured_graph!r}. '
+                'Set FHCAL_MODEL_NAME to a new experiment name or choose the checkpoint graph.'
+            )
+        self.graph = graph
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        state_dict.setdefault(prefix + '_extra_state', 'contact')
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
+    def _reload_graph(self, module, incompatible_keys):
+        self._edge_index, self._edge_features = self._build_graph()
         self._graph_batch = None
 
     def _get_graph_batch(self, batch_size, module_count):
-        edge_index = self.geometry.edge_index
-        edge_features = self.geometry.edge_features
+        edge_index = self._edge_index
+        edge_features = self._edge_features
         graph_batch = self._graph_batch
         if graph_batch is not None:
             cached_edges, cached_features, cached_node_batch = graph_batch

@@ -28,6 +28,7 @@ from pipeline.train import Stepper, WganEpochTrainer, GanTrainer
 
 
 DEFAULT_DATA_FILENAME = 'fhcal_data_muons_81619.npz'
+DEFAULT_GNN_GRAPH = 'knn4'
 
 
 def form_metric() -> Metric:
@@ -74,7 +75,13 @@ def form_dataset(train: bool = False) -> torch.utils.data.Dataset:
     return data.UnifiedDatasetWrapper(dataset)
 
 
-def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs: int = 100) -> Generator[Tuple[int, GAN], None, GAN]:
+def form_gan_trainer(
+    model_name: str,
+    gan_model: Optional[GAN] = None,
+    n_epochs: int = 100,
+    *,
+    graph: str = DEFAULT_GNN_GRAPH,
+) -> Generator[Tuple[int, GAN], None, GAN]:
     """
     :return: a generator that yields (epoch number, gan_model after this epoch)
     """
@@ -101,7 +108,7 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
         condition_state=train_dataset.dataset.condition_state,
         dilation_rates=(1, 2, 4),
     )
-    discriminator = CaloganPhysicsDiscriminator3D(geometry, condition_dim)
+    discriminator = CaloganPhysicsDiscriminator3D(geometry, condition_dim, graph=graph)
     # discriminator = apply_normalization(discriminator, MultiplyOutputNormalizer, coef=2., is_trainable_coef=False)
     # discriminator = apply_normalization(discriminator, WeakSpectralNormalizer, beta=2., is_trainable_beta=False)
     # discriminator = apply_normalization(discriminator, ABCASNormalizer)
@@ -162,13 +169,18 @@ def form_gan_trainer(model_name: str, gan_model: Optional[GAN] = None, n_epochs:
 
 
 def run() -> GAN:
-    model_name = 'physics_virtual25_dilated_gnn_layers7_10_gine_contact_allnodes'
+    graph = os.environ.get('FHCAL_GNN_GRAPH', DEFAULT_GNN_GRAPH)
+    if graph not in CaloganPhysicsDiscriminator3D.GRAPH_TYPES:
+        raise ValueError(
+            f'Invalid FHCAL_GNN_GRAPH {graph!r}; expected {CaloganPhysicsDiscriminator3D.GRAPH_TYPES}'
+        )
+    model_name = f'physics_virtual25_dilated_gnn_layers7_10_gine_{graph}_allnodes'
     data_filename = os.environ.get('FHCAL_DATA_FILENAME', DEFAULT_DATA_FILENAME)
     if data_filename != DEFAULT_DATA_FILENAME:
         model_name += '_' + os.path.splitext(os.path.basename(data_filename))[0]
     model_name = os.environ.get('FHCAL_MODEL_NAME', model_name)
-    print(f'Model: {model_name}; dataset: {data_filename}')
-    gan_trainer, epoch_trainer = form_gan_trainer(model_name=model_name, n_epochs=15)
+    print(f'Model: {model_name}; dataset: {data_filename}; graph: {graph}')
+    gan_trainer, epoch_trainer = form_gan_trainer(model_name=model_name, n_epochs=15, graph=graph)
     gan = None
     for epoch, gan in gan_trainer:
         pass
