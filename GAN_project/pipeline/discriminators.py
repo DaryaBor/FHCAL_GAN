@@ -37,13 +37,11 @@ class GINEBlock(nn.Module):
 
 
 class CaloganPhysicsDiscriminator3D(Discriminator):
-    GRAPH_TYPES = ('contact', 'radius20', 'knn4')
+    GRAPH_TYPE = 'knn4'
 
-    def __init__(self, geometry, condition_dim, hidden=64, depth=4, *, graph=None):
+    def __init__(self, geometry, condition_dim, hidden=64, depth=4):
         super().__init__()
         self.geometry = geometry
-        self._configured_graph = graph
-        self.graph = 'contact' if graph is None else graph
         edge_index, edge_features = self._build_graph()
         self.register_buffer('_edge_index', edge_index, persistent=False)
         self.register_buffer('_edge_features', edge_features, persistent=False)
@@ -68,15 +66,8 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
         )
 
     def _build_graph(self):
-        if self.graph not in self.GRAPH_TYPES:
-            raise ValueError(
-                f'Unknown FHCal graph: {self.graph!r}; expected one of {self.GRAPH_TYPES}'
-            )
-
         contact_edges = self.geometry.edge_index
         contact_features = self.geometry.edge_features
-        if self.graph == 'contact':
-            return contact_edges, contact_features
 
         centers = contact_features.new_tensor(
             [(module.x, module.y) for module in self.geometry.modules],
@@ -86,13 +77,10 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
         distances = offsets.norm(dim=-1)
         distances.fill_diagonal_(float('inf'))
 
-        if self.graph == 'knn4':
-            neighbor_count = min(4, len(centers) - 1)
-            sources = distances.argsort(dim=1, stable=True)[:, :neighbor_count].flatten()
-            targets = torch.arange(len(centers), device=centers.device)
-            targets = targets.repeat_interleave(neighbor_count)
-        else:
-            targets, sources = (distances <= 20.0 + 1e-4).nonzero(as_tuple=True)
+        neighbor_count = min(4, len(centers) - 1)
+        sources = distances.argsort(dim=1, stable=True)[:, :neighbor_count].flatten()
+        targets = torch.arange(len(centers), device=centers.device)
+        targets = targets.repeat_interleave(neighbor_count)
 
         shared_sides = torch.zeros_like(distances)
         shared_sides[contact_edges[1], contact_edges[0]] = contact_features[:, 3].to(distances.dtype)
@@ -104,18 +92,17 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
         return torch.stack((sources, targets)), edge_features
 
     def get_extra_state(self):
-        return self.graph
+        return self.GRAPH_TYPE
 
     def set_extra_state(self, graph):
-        if self._configured_graph is not None and graph != self._configured_graph:
+        if graph != self.GRAPH_TYPE:
             raise RuntimeError(
-                f'Checkpoint graph {graph!r} differs from the configured graph {self._configured_graph!r}. '
-                'Set FHCAL_MODEL_NAME to a new experiment name or choose the checkpoint graph.'
+                f'Expected a {self.GRAPH_TYPE} checkpoint, got graph {graph!r}. '
+                'Use the matching code revision to load this checkpoint.'
             )
-        self.graph = graph
 
     def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
-        state_dict.setdefault(prefix + '_extra_state', 'contact')
+        state_dict.setdefault(prefix + '_extra_state', None)
         super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     def _reload_graph(self, module, incompatible_keys):

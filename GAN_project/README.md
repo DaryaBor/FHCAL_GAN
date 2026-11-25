@@ -49,8 +49,7 @@
   последним ненулевым сигналом: даже у полностью нулевого модуля №1 есть 7 слоёв.
 - Координата центров Z = 202.22000122070312; это не объявляется передней плоскостью.
 - Карта хранения: №8→[1,4], №16→[3,6], №19→[3,2]; все 54 позиции уникальны.
-- Для выбранных размеров: H×W=42×62, 2504 активных XY-ячеек. Контактный граф
-  критика связный и содержит 204 направленных ребра (102 пары модулей).
+- Для выбранных размеров: H×W=42×62, 2504 активных XY-ячеек.
 - Размеры 15/20 см и единицы см остаются предположениями выбранной архитектуры:
   сам отчёт их независимо не измеряет.
 
@@ -70,7 +69,7 @@ Train/validation split использует прежний seed; статист�
 ParticlePoint — вершина генерации, не точка попадания.
 
 Для GINE используется отдельный каталог эксперимента с именем по умолчанию
-`physics_virtual25_dilated_gnn_layers7_10_gine_contact_allnodes`. При передаче
+`physics_virtual25_dilated_gnn_layers7_10_gine_knn4_allnodes`. При передаче
 `FHCAL_MODEL_NAME` укажите новое имя для первого запуска GINE, поскольку
 возобновление требует чекпоинта с весами GINE.
 
@@ -135,10 +134,10 @@ fi
 
 ```bash
 FHCAL_DATA_FILENAME=fhcal_data_muons_81619.npz \
-FHCAL_MODEL_NAME=muons_81619_gine_contact_allnodes \
+FHCAL_MODEL_NAME=muons_81619_gine_knn4_allnodes \
   sbatch -A proj_1855 --export=ALL --job-name=bmn-base train.sbatch
 FHCAL_DATA_FILENAME=fhcal_data_muons_81619_large.npz \
-FHCAL_MODEL_NAME=muons_81619_large_gine_contact_allnodes \
+FHCAL_MODEL_NAME=muons_81619_large_gine_knn4_allnodes \
   sbatch -A proj_1855 --export=ALL --job-name=bmn-large train.sbatch
 ```
 
