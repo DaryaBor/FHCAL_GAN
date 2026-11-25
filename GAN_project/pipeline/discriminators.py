@@ -2,7 +2,7 @@ from abc import abstractmethod
 from typing import Any
 import torch
 from torch import nn
-from torch_geometric.nn import GINEConv, global_add_pool, global_mean_pool
+from torch_geometric.nn import CGConv, GINEConv, global_add_pool, global_mean_pool
 
 
 class Discriminator(nn.Module):
@@ -36,11 +36,32 @@ class GINEBlock(nn.Module):
         return self.norm(node_features + updates)
 
 
+class CGConvBlock(nn.Module):
+    def __init__(self, hidden, edge_feature_count):
+        super().__init__()
+        self.conv = CGConv(channels=hidden, dim=edge_feature_count, aggr='add')
+        self.norm = nn.LayerNorm(hidden)
+
+    def forward(self, node_features, edge_index, edge_features):
+        updated_features = self.conv(node_features, edge_index, edge_features)
+        return self.norm(updated_features)
+
+
 class CaloganPhysicsDiscriminator3D(Discriminator):
     GRAPH_TYPE = 'knn4'
+    DEFAULT_ARCHITECTURE = 'gine_knn4'
+    ARCHITECTURES = {
+        'gine_knn4': GINEBlock,
+        'cgconv_knn4': CGConvBlock,
+    }
 
-    def __init__(self, geometry, condition_dim, hidden=64, depth=4):
+    def __init__(self, geometry, condition_dim, hidden=64, depth=4, *, architecture=None):
         super().__init__()
+        self._configured_architecture = architecture
+        self.architecture = self.DEFAULT_ARCHITECTURE if architecture is None else architecture
+        if self.architecture not in self.ARCHITECTURES:
+            raise ValueError(f'Unknown FHCal architecture {self.architecture!r}.')
+
         self.geometry = geometry
         edge_index, edge_features = self._build_graph()
         self.register_buffer('_edge_index', edge_index, persistent=False)
@@ -56,14 +77,18 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
             nn.SiLU(),
         )
         self.input = nn.Linear(node_input_size, hidden)
-        self.blocks = nn.ModuleList(
-            [GINEBlock(hidden, geometry.edge_features.size(-1)) for _ in range(depth)]
-        )
+        self.blocks = self._build_blocks(self.architecture, depth)
         self.output = nn.Sequential(
             nn.Linear(2 * hidden, hidden),
             nn.SiLU(),
             nn.Linear(hidden, 1),
         )
+
+    def _build_blocks(self, architecture, depth):
+        block = self.ARCHITECTURES[architecture]
+        hidden = self.input.out_features
+        edge_feature_count = self.geometry.edge_features.size(-1)
+        return nn.ModuleList([block(hidden, edge_feature_count) for _ in range(depth)])
 
     def _build_graph(self):
         contact_edges = self.geometry.edge_index
@@ -92,14 +117,27 @@ class CaloganPhysicsDiscriminator3D(Discriminator):
         return torch.stack((sources, targets)), edge_features
 
     def get_extra_state(self):
-        return self.GRAPH_TYPE
+        if self.architecture == self.DEFAULT_ARCHITECTURE:
+            return self.GRAPH_TYPE
+        return self.architecture
 
-    def set_extra_state(self, graph):
-        if graph != self.GRAPH_TYPE:
+    def set_extra_state(self, state):
+        architecture = self.DEFAULT_ARCHITECTURE if state == self.GRAPH_TYPE else state
+        if not isinstance(architecture, str) or architecture not in self.ARCHITECTURES:
             raise RuntimeError(
-                f'Expected a {self.GRAPH_TYPE} checkpoint, got graph {graph!r}. '
+                f'Unsupported FHCal checkpoint architecture {state!r}. '
                 'Use the matching code revision to load this checkpoint.'
             )
+        if self._configured_architecture is not None and architecture != self._configured_architecture:
+            raise RuntimeError(
+                f'Checkpoint architecture {architecture!r} differs from '
+                f'the configured architecture {self._configured_architecture!r}. '
+                'Set FHCAL_MODEL_NAME to a new experiment name or select the checkpoint architecture.'
+            )
+        if architecture != self.architecture:
+            blocks = self._build_blocks(architecture, len(self.blocks))
+            self.blocks = blocks.to(self.input.weight).train(self.training)
+            self.architecture = architecture
 
     def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
         state_dict.setdefault(prefix + '_extra_state', None)
