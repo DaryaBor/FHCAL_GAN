@@ -61,12 +61,167 @@ class ThreeData:
         return torch.utils.data.Subset(torch.utils.data.TensorDataset(self.x, self.conditions, self.module_ids), idx.tolist())
 
 
+def add_data_args(parser):
+    """One combined NPZ (--data) or legacy three files (--data8/16/19)."""
+    import argparse
+    parser.add_argument('--data', type=Path, help='One combined muon NPZ with all 3 beam directions')
+    for module in MODULES:
+        parser.add_argument(f'--data{module}', type=Path, help=f'Legacy separate file for module {module}')
+
+
+def data_source(args):
+    """Validate CLI arguments; return combined Path or module->Path mapping."""
+    separate = {m: getattr(args, f'data{m}') for m in MODULES}
+    if args.data is not None:
+        if any(v is not None for v in separate.values()):
+            raise ValueError('Use --data OR --data8/16/19, not both')
+        return Path(args.data)
+    if not all(v is not None for v in separate.values()):
+        raise ValueError('Provide --data combined.npz OR all of --data8, --data16, --data19')
+    return separate
+
+
+def beam_labels(momentum, max_angle_deg=2.0):
+    """Classify muon beam by recorded momentum DIRECTION, not event order.
+
+    Calibrated against the beam directions documented in this project. A mismatched
+    beam is a fatal error, never silently allocated to the closest module.
+    """
+    mom = np.asarray(momentum, dtype=np.float64)
+    if mom.ndim != 2 or mom.shape[1] != 3 or not np.isfinite(mom).all():
+        raise ValueError('ParticleMomentum must be a finite (N,3) array')
+    norms = np.linalg.norm(mom, axis=1)
+    if not len(mom) or np.any(norms < 1e-8):
+        raise ValueError('Empty or zero ParticleMomentum vectors')
+    refs=[]
+    for module in MODULES:
+        _, theta, phi = KINEMATICS[module]
+        th, ph = np.deg2rad([theta, phi])
+        refs.append([np.sin(th)*np.cos(ph), np.sin(th)*np.sin(ph), np.cos(th)])
+    ref=np.asarray(refs)
+    angles=np.rad2deg(np.arccos(np.clip((mom/norms[:,None]) @ ref.T,-1,1)))
+    closest=angles.argmin(axis=1)
+    errors=angles[np.arange(len(closest)),closest]
+    if np.any(errors>max_angle_deg):
+        i=int(np.flatnonzero(errors>max_angle_deg)[0])
+        raise ValueError(f'Cannot identify incident module for {np.count_nonzero(errors>max_angle_deg)} events; '
+                         f'first index={i}, momentum={mom[i].tolist()}, nearest-angle={errors[i]:.3f} deg. '
+                         'Verify simulation beam directions before training.')
+    for i,mod in enumerate(MODULES):
+        if not np.any(closest==i):
+            raise ValueError(f'No events for module {mod} in combined file')
+    return closest
+
+
+def _finish_three(raw_parts,pos_parts,label_parts,train,val,test,metadata,stats):
+    """Identical normalization and splitting for combined and three-file loading."""
+    train_idx=np.concatenate(train); val_idx=np.concatenate(val);test_idx=np.concatenate(test)
+    x_raw=np.concatenate(raw_parts, axis=0)
+    points=np.concatenate(pos_parts, axis=0)
+    labels=np.concatenate(label_parts, axis=0)
+    if stats is None:
+        active = x_raw[train_idx]
+        positive=np.log1p(active[active>0])
+        scale=float(max(np.quantile(positive,0.995),0.1)) if len(positive) else 0.1
+        pmean=points[train_idx].mean(axis=0)
+        pstd=points[train_idx].std(axis=0)
+        pstd=np.maximum(pstd,1e-4)
+    else:
+        scale=float(stats['scale'])
+        pmean=np.asarray(stats['point_mean'],dtype=np.float32)
+        pstd=np.asarray(stats['point_std'],dtype=np.float32)
+    x=np.log1p(x_raw)/scale
+    cond=np.concatenate([np.eye(len(MODULES),dtype=np.float32)[labels],(points-pmean)/pstd],axis=1)
+    assert tuple(x.shape[1:])==SHAPE and cond.shape[1]==5
+    return ThreeData(torch.from_numpy(np.ascontiguousarray(x,dtype=np.float32)),
+                     torch.from_numpy(np.ascontiguousarray(cond,dtype=np.float32)),
+                     torch.from_numpy(labels.copy()),train_idx,val_idx,test_idx,
+                     scale,pmean,pstd,metadata)
+
+
+def load_combined(path, seed=42, max_per_module=0, stats=None, allow_other_kinematics=False):
+    """One NPZ, one conditional model; stratify 8/16/19 by particle momentum.
+
+    Only the requested pilot examples per beam are copied into model arrays.
+    Reading compressed NPZ nevertheless requires decompressing EnergyDeposit once.
+    """
+    import hashlib
+    p=Path(path)
+    if not p.is_file():
+        raise FileNotFoundError(f'Combined muon dataset does not exist: {p}')
+    parts,points_parts,labels_parts,tr,va,te,metadata=[],[],[],[],[],[],[]
+    cursor=0
+    with np.load(p,allow_pickle=False) as ds:
+        if not {'EnergyDeposit','ParticlePDG','ParticlePoint','ParticleMomentum'} <= set(ds.files):
+            raise ValueError(f'Missing required keys from {p}; available: {ds.files}')
+        pdg=ds['ParticlePDG']
+        if not np.all(pdg==-13):
+            raise ValueError(f'Expected only mu+ (PDG=-13), received {np.unique(pdg).tolist()}')
+        pos=np.asarray(ds['ParticlePoint'],dtype=np.float32)
+        mom=np.asarray(ds['ParticleMomentum'],dtype=np.float32)
+        if pos.shape!=(len(pdg),3) or mom.shape!=(len(pdg),3):
+            raise ValueError(f'Unexpected ParticlePoint/ParticleMomentum shapes: {pos.shape}, {mom.shape}')
+        labels=beam_labels(mom)
+        # Loading one zipped npz's EnergyDeposit can require gigabytes of RAM;
+        # avoid allocating three additional complete copies before subsampling.
+        raw=ds['EnergyDeposit']
+        if len(raw)!=len(pdg):
+            raise ValueError('EnergyDeposit and ParticlePDG event counts differ')
+        with p.open('rb') as handle:
+            digest=hashlib.file_digest(handle,'sha256').hexdigest()
+        for mi,module in enumerate(MODULES):
+            candidate=np.flatnonzero(labels==mi)
+            rng=np.random.default_rng(seed+module*1009)
+            chosen=rng.permutation(candidate)
+            if max_per_module:
+                chosen=chosen[:min(int(max_per_module),len(chosen))]
+            n=len(chosen)
+            if n<30:
+                raise ValueError(f'Module {module} has too few events ({n})')
+            beam=mom[candidate]
+            actual_mom=beam.mean(axis=0)
+            actual_p=float(np.linalg.norm(actual_mom))
+            target_p,target_theta,target_phi=KINEMATICS[module]
+            th,ph=np.deg2rad([target_theta,target_phi])
+            ref=np.array([target_p*np.sin(th)*np.cos(ph),target_p*np.sin(th)*np.sin(ph),target_p*np.cos(th)])
+            dot=np.clip(float(np.dot(actual_mom,ref)/(np.linalg.norm(actual_mom)*np.linalg.norm(ref))),-1.,1.)
+            error=float(np.rad2deg(np.arccos(dot)))
+            if error>2.0 and not allow_other_kinematics:
+                raise ValueError(f'Module {module} direction mismatch ({error:.3f} degrees)')
+            if abs(actual_p-target_p)>0.03:
+                print(f'NOTE module {module}: actual p={actual_p:.4f} GeV/c, nominal p={target_p:.4f}; actual is used',flush=True)
+            if np.max(np.abs(beam-beam[0]))>1e-3:
+                raise ValueError(f'Multiple momenta inside module {module}; expected one fixed beam')
+            event=to_central(raw[chosen])
+            kept=float(np.sum(event,dtype=np.float64)/max(np.sum(raw[chosen],dtype=np.float64),1e-12))
+            print(f'Module {module}: {n} of {len(candidate)} events, central energy retained={kept:.4f}, '
+                  f'p={actual_p:.4f} GeV/c, angular diff={error:.4f} deg',flush=True)
+            parts.append(event)
+            points_parts.append(pos[chosen,:2].copy())
+            labels_parts.append(np.full(n,mi,dtype=np.int64))
+            ntr=int(n*.8); nva=int(n*.1)
+            tr.append(np.arange(cursor,cursor+ntr))
+            va.append(np.arange(cursor+ntr,cursor+ntr+nva))
+            te.append(np.arange(cursor+ntr+nva,cursor+n))
+            cursor+=n
+            metadata.append({'file_sha256':digest,'module':module,'file':p.name,
+                    'combined':True,'original_events':int(len(candidate)),'selected_events':n,
+                    'central_energy_fraction':kept,
+                    'momentum_xyz_example':mom[chosen[0]].tolist(),
+                    'nominal_kinematics':{'p':target_p,'theta':target_theta,'phi':target_phi},
+                    'actual_p':actual_p,'direction_error_deg':error})
+    return _finish_three(parts,points_parts,labels_parts,tr,va,te,metadata,stats)
+
+
 def load_three(paths, seed=42, max_per_module=0, stats=None, allow_other_kinematics=False):
     """Stratified 80/10/10 split per impact module. Fit normalization on train only.
 
     File 16/19 must be muons, never the older proton dataset.
     max_per_module=0 uses all data. stats from checkpoint prevents refitting.
     """
+    if isinstance(paths, (str, Path)):
+        return load_combined(paths, seed=seed, max_per_module=max_per_module,
+                             stats=stats, allow_other_kinematics=allow_other_kinematics)
     if set(paths) != set(MODULES):
         raise ValueError(f'Provide one path for each module {MODULES}')
     raw_parts, pos_parts, label_parts, train, val, test, metadata = [], [], [], [], [], [], []
@@ -134,28 +289,7 @@ def load_three(paths, seed=42, max_per_module=0, stats=None, allow_other_kinemat
         val.append(np.arange(cursor+n_train,cursor+n_train+n_val))
         test.append(np.arange(cursor+n_train+n_val,cursor+n))
         cursor += n
-    train_idx=np.concatenate(train); val_idx=np.concatenate(val);test_idx=np.concatenate(test)
-    x_raw=np.concatenate(raw_parts, axis=0)
-    points=np.concatenate(pos_parts, axis=0)
-    labels=np.concatenate(label_parts, axis=0)
-    if stats is None:
-        active = x_raw[train_idx]
-        positive=np.log1p(active[active>0])
-        scale=float(max(np.quantile(positive,0.995),0.1))
-        pmean=points[train_idx].mean(axis=0)
-        pstd=points[train_idx].std(axis=0)
-        pstd=np.maximum(pstd,1e-4)
-    else:
-        scale=float(stats['scale'])
-        pmean=np.asarray(stats['point_mean'],dtype=np.float32)
-        pstd=np.asarray(stats['point_std'],dtype=np.float32)
-    x=np.log1p(x_raw)/scale
-    cond=np.concatenate([np.eye(len(MODULES),dtype=np.float32)[labels],(points-pmean)/pstd],axis=1)
-    assert tuple(x.shape[1:])==SHAPE and cond.shape[1]==5
-    return ThreeData(torch.from_numpy(np.ascontiguousarray(x,dtype=np.float32)),
-                     torch.from_numpy(np.ascontiguousarray(cond,dtype=np.float32)),
-                     torch.from_numpy(labels.copy()),train_idx,val_idx,test_idx,
-                     scale,pmean,pstd,metadata)
+    return _finish_three(raw_parts,pos_parts,label_parts,train,val,test,metadata,stats)
 
 
 def decode(x,scale):

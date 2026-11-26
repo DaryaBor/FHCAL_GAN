@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch.utils.data import DataLoader,Subset,TensorDataset
-from .core import MODULES,load_three,decode
+from .core import MODULES,load_three,decode, add_data_args, data_source
 from .gmm_adapter import author_modules,decode_codes,CODE_DIM
 from .parameter_flow import ParameterVelocity,integrate
 from .metrics import save_report
@@ -14,7 +14,7 @@ from .metrics import save_report
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    for module in MODULES:p.add_argument(f'--data{module}',type=Path,required=True)
+    add_data_args(p)
     p.add_argument('--checkpoint',type=Path,default=Path('experiments/gmm_flow/best.pt'))
     p.add_argument('--out',type=Path,default=Path('results/gmm'))
     p.add_argument('--num-per-module',type=int,default=2048)
@@ -29,7 +29,7 @@ def main():
     dev=torch.device('cuda' if a.device=='auto' and torch.cuda.is_available() else a.device if a.device!='auto' else 'cpu')
     torch.manual_seed(a.seed);np.random.seed(a.seed)
     ckpt=torch.load(a.checkpoint,map_location='cpu',weights_only=True)
-    data=load_three({m:getattr(a,f'data{m}') for m in MODULES},
+    data=load_three(data_source(a),
                     seed=ckpt['data_seed'],max_per_module=ckpt['max_per_module'],
                     stats=ckpt['normalization'],allow_other_kinematics=ckpt['allow_other_kinematics'])
     if data.metadata!=ckpt['metadata']:raise ValueError('Dataset mismatch with saved model')

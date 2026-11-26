@@ -1,1 +1,3 @@
-Muon Geant4 input files go here or in shared FHCAL_DATA_DIR; do not commit NPZ data.
+The large combined muon NPZ stays outside Git in $HOME/FHCAL_GAN/datasets/raw/.
+Use FHCAL_DATA_FILE or python run_pipeline.py ... --data /absolute/path/file.npz.
+Do not commit data or checkpoints.

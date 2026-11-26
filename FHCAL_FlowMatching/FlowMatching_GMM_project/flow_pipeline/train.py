@@ -9,14 +9,14 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch.utils.data import DataLoader,TensorDataset
-from .core import MODULES,load_three
+from .core import MODULES,load_three, add_data_args, data_source
 from .parameter_flow import ParameterVelocity,loss
 from .gmm_adapter import CODE_DIM
 
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    for m in MODULES:p.add_argument(f'--data{m}',type=Path,required=True)
+    add_data_args(p)
     p.add_argument('--fits',type=Path,default=Path('experiments/gmm_fits/fitbank.npz'))
     p.add_argument('--out',type=Path,default=Path('experiments/gmm_flow'))
     p.add_argument('--epochs',type=int,default=100)
@@ -39,7 +39,7 @@ def main():
         ti=bank['train_indices'].copy();vi=bank['val_indices'].copy()
         target_train=bank['codes_train'].copy();target_val=bank['codes_val'].copy()
     if fit_meta['data_seed']!=a.seed:raise ValueError('Fit split seed and training seed differ')
-    data=load_three({m:getattr(a,f'data{m}') for m in MODULES},seed=a.seed,max_per_module=fit_meta['max_per_module'],
+    data=load_three(data_source(a),seed=a.seed,max_per_module=fit_meta['max_per_module'],
               allow_other_kinematics=a.allow_other_kinematics)
     if data.metadata!=fit_meta['source_metadata']:raise ValueError('Dataset files differ from original GMM fits')
     if not set(ti).issubset(set(data.train_idx)) or not np.array_equal(vi,data.val_idx):
@@ -103,7 +103,7 @@ def main():
               'rng_cuda':torch.cuda.get_rng_state_all() if device.type=='cuda' else None},last_path)
         with (a.out/'history.csv').open('w',newline='') as f:
             writer=csv.DictWriter(f,['epoch','train_loss','val_loss']);writer.writeheader();writer.writerows(history)
-        (a.out/'config.json').write_text(json.dumps({**vars(a),**{f'data{m}':str(getattr(a,f'data{m}')) for m in MODULES},
+        (a.out/'config.json').write_text(json.dumps({**vars(a),'data_source':str(data_source(a)),
                       'fits':str(a.fits),'out':str(a.out),'training_codes':len(ti),
                       'validation_codes':len(vi)},indent=2,default=str))
     print('Best epoch',best_epoch,'best validation',best)

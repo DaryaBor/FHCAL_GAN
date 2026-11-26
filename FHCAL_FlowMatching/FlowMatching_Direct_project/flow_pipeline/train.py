@@ -11,13 +11,12 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, WeightedRandomSampler
 
-from .core import MODULES, VelocityNet, fm_loss, load_three
+from .core import MODULES, VelocityNet, fm_loss, load_three, add_data_args, data_source
 
 
 def arguments():
     p = argparse.ArgumentParser(description=__doc__)
-    for module in MODULES:
-        p.add_argument(f'--data{module}', type=Path, required=True)
+    add_data_args(p)
     p.add_argument('--out', type=Path, default=Path('experiments/direct'))
     p.add_argument('--epochs', type=int, default=100)
     p.add_argument('--batch-size', type=int, default=256)
@@ -52,7 +51,7 @@ def main():
     prior=torch.load(last_path,weights_only=True,map_location='cpu') if a.resume and last_path.is_file() else None
     if prior and (prior['model_config']!={'width':a.width,'blocks':a.blocks} or prior['data_seed']!=a.seed or prior['max_per_module']!=a.max_per_module):
         raise ValueError('Resume configuration differs from saved training run')
-    data=load_three({m:getattr(a,f'data{m}') for m in MODULES}, seed=a.seed,max_per_module=a.max_per_module,
+    data=load_three(data_source(a), seed=a.seed,max_per_module=a.max_per_module,
                     stats=(prior['normalization'] if prior else None),allow_other_kinematics=a.allow_other_kinematics)
     if prior and data.metadata != prior['metadata']:
         raise ValueError('Dataset files or kinematics changed relative to checkpoint')
@@ -107,7 +106,7 @@ def main():
         with (a.out/'history.csv').open('w',newline='') as f:
             writer=csv.DictWriter(f,fieldnames=['epoch','train_loss','val_loss']);writer.writeheader();writer.writerows(history)
         (a.out/'config.json').write_text(json.dumps({**vars(a),'out':str(a.out),
-                      **{f'data{m}':str(getattr(a,f'data{m}')) for m in MODULES},'data_metadata':data.metadata},indent=2,ensure_ascii=False))
+                      'data_source':str(data_source(a)),'data_metadata':data.metadata},indent=2,ensure_ascii=False,default=str))
     print('Best epoch',best_epoch,'best validation',best)
 
 if __name__=='__main__':main()

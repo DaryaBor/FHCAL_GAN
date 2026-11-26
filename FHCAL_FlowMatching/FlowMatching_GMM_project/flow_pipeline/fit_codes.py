@@ -12,7 +12,7 @@ import time
 import numpy as np
 import torch
 
-from .core import MODULES,load_three,decode
+from .core import MODULES,load_three,decode, add_data_args, data_source
 from .gmm_adapter import PARAM_DIM,CODE_DIM,K,MIN_SCALES,author_modules,flat_from_grid,fit_one,reference_path
 
 _WORKER={}
@@ -28,7 +28,7 @@ def _work(job):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    for module in MODULES:parser.add_argument(f'--data{module}',type=Path,required=True)
+    add_data_args(parser)
     parser.add_argument('--out',type=Path,default=Path('experiments/gmm_fits/fitbank.npz'))
     parser.add_argument('--max-per-module',type=int,default=600,help='Same selected N per module as direct model; 0=full dataset')
     parser.add_argument('--train-per-module',type=int,default=0,help='0=all selected train events. Pilot restriction is possible but breaks matched-size comparison.')
@@ -40,7 +40,7 @@ def main():
     a=parser.parse_args()
     if a.out.exists():raise FileExistsError(f'{a.out} exists; preserve fitted codes. Choose another --out to refit.')
     if min(a.workers,a.restarts,a.maxiter)<1:raise ValueError('Workers/restarts/maxiter must be positive')
-    data=load_three({m:getattr(a,f'data{m}') for m in MODULES},seed=a.seed,max_per_module=a.max_per_module,
+    data=load_three(data_source(a),seed=a.seed,max_per_module=a.max_per_module,
                     allow_other_kinematics=a.allow_other_kinematics)
     projector,modules,fit_fn,_,geometry_sha=author_modules()
     full_indices_train=data.train_idx
