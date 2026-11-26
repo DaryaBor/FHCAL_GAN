@@ -204,7 +204,7 @@ class CaloganPhysicsGenerator3D(Generator):
     The historical class name is retained; layers are Conv2d, depth is channels.
     """
     def __init__(self, geometry, condition_dim, noise_dim=64, hidden=64,
-                 condition_state=None, dilation_rates=(1, 2, 4)):
+                 condition_state=None, dilation_rates=(1, 2, 4), *, energy_condition=False):
         super().__init__()
         if len(dilation_rates) != 3 or any(not isinstance(d, int) or d < 1 for d in dilation_rates):
             raise ValueError('dilation_rates must contain three positive integers')
@@ -217,7 +217,7 @@ class CaloganPhysicsGenerator3D(Generator):
         self.register_buffer('pdg_codes', torch.tensor(state['pdg_codes'], dtype=torch.long))
 
         self.condition = nn.Sequential(
-            nn.Linear(condition_dim, hidden),
+            nn.Linear(condition_dim + int(energy_condition), hidden),
             nn.SiLU(),
         )
         # Shared event features + six spatial geometry channels at full H x W.
@@ -268,3 +268,120 @@ class CaloganPhysicsGenerator3D(Generator):
 
     def forward(self, noise, conditions):
         return self.geometry.aggregate(self.virtual_density(noise, conditions))
+
+
+class ConditionalEnergyFlow(nn.Module):
+    def __init__(self, condition_dim, hidden=64):
+        super().__init__()
+        self.velocity = nn.Sequential(
+            nn.Linear(condition_dim + 2, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, 1),
+        )
+        self.positive_logit = nn.Sequential(
+            nn.Linear(condition_dim, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, 1),
+        )
+        self.register_buffer('log_mean', torch.zeros(()))
+        self.register_buffer('log_scale', torch.ones(()))
+        self.register_buffer('has_empty_events', torch.tensor(False))
+
+    def standardize(self, energy):
+        return (energy.log() - self.log_mean) / self.log_scale
+
+    def _velocity(self, position, time, conditions):
+        inputs = torch.cat((conditions, position[:, None], time[:, None]), dim=1)
+        return self.velocity(inputs).squeeze(1)
+
+    def fit(self, energy, conditions, *, updates=3000, batch_size=256):
+        device = self.log_mean.device
+        energy = energy.to(device)
+        conditions = conditions.to(device)
+        positive = energy > 0
+        if not positive.any():
+            raise ValueError('Energy flow requires positive total energies in the training data.')
+
+        positive_logs = energy[positive].log()
+        positive_conditions = conditions[positive]
+        self.log_mean.copy_(positive_logs.mean())
+        self.log_scale.copy_(positive_logs.std(unbiased=False).clamp_min(1e-6))
+        self.has_empty_events.copy_((~positive).any())
+        targets = (positive_logs - self.log_mean) / self.log_scale
+        fit_empty_events = bool(self.has_empty_events.item())
+
+        self.requires_grad_(True)
+        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
+        rng = torch.Generator(device=device).manual_seed(2026)
+        for _ in range(updates):
+            indices = torch.randint(len(targets), (batch_size,), device=device, generator=rng)
+            target = targets[indices]
+            noise = torch.randn(target.shape, device=device, generator=rng)
+            time = torch.rand(target.shape, device=device, generator=rng)
+            position = torch.lerp(noise, target, time)
+            velocity = self._velocity(position, time, positive_conditions[indices])
+            loss = F.mse_loss(velocity, target - noise)
+            if fit_empty_events:
+                indices = torch.randint(len(energy), (batch_size,), device=device, generator=rng)
+                logits = self.positive_logit(conditions[indices]).squeeze(1)
+                loss = loss + F.binary_cross_entropy_with_logits(logits, positive[indices].to(logits.dtype))
+
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+
+        optimizer.zero_grad(set_to_none=True)
+        self.requires_grad_(False)
+        if not all(torch.isfinite(parameter).all() for parameter in self.parameters()):
+            raise FloatingPointError('Energy-flow fitting produced nonfinite parameters.')
+
+    @torch.no_grad()
+    def sample(self, conditions):
+        position = torch.randn_like(conditions[:, 0])
+        dt = 1.0 / 32
+        for step in range(32):
+            time = torch.full_like(position, step * dt)
+            midpoint = position + dt / 2 * self._velocity(position, time, conditions)
+            position = position + dt * self._velocity(midpoint, time + dt / 2, conditions)
+
+        energy = (self.log_mean + self.log_scale * position).exp()
+        if not (torch.isfinite(energy) & (energy > 0)).all():
+            raise FloatingPointError('Sampled positive energies are outside the representable range.')
+        if bool(self.has_empty_events.item()):
+            positive_probability = self.positive_logit(conditions).squeeze(1).sigmoid()
+            energy = energy * (torch.rand_like(energy) < positive_probability)
+        return energy
+
+
+class FlowFractionGenerator(CaloganPhysicsGenerator3D):
+    def __init__(self, geometry, condition_dim, noise_dim=64, hidden=64,
+                 condition_state=None, dilation_rates=(1, 2, 4)):
+        super().__init__(
+            geometry, condition_dim, noise_dim=noise_dim, hidden=hidden,
+            condition_state=condition_state, dilation_rates=dilation_rates, energy_condition=True,
+        )
+        self.energy_flow = ConditionalEnergyFlow(condition_dim)
+        self.energy_flow.requires_grad_(False)
+
+    def requires_grad_(self, requires_grad=True):
+        super().requires_grad_(requires_grad)
+        self.energy_flow.requires_grad_(False)
+        return self
+
+    def energy_fractions(self, noise, conditions, total_energy):
+        positive = total_energy > 0
+        safe_energy = torch.where(positive, total_energy, torch.ones_like(total_energy))
+        energy_condition = self.energy_flow.standardize(safe_energy)
+        energy_condition = torch.where(positive, energy_condition, torch.zeros_like(energy_condition))
+        conditions = torch.cat((conditions, energy_condition[:, None]), dim=1)
+        weights = super().forward(noise, conditions)
+        weights = weights + self.geometry.layer_mask * torch.finfo(weights.dtype).tiny
+        return weights / weights.sum(dim=(1, 2), keepdim=True)
+
+    def forward(self, noise, conditions, *, total_energy=None):
+        if total_energy is None:
+            total_energy = self.energy_flow.sample(conditions)
+        fractions = self.energy_fractions(noise, conditions, total_energy)
+        return total_energy[:, None, None] * fractions

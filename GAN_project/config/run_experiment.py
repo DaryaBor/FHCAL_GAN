@@ -16,14 +16,15 @@ from pipeline.discriminators import CaloganPhysicsDiscriminator3D
 from pipeline.evaluation import evaluate_model
 from pipeline.experiment_setup import experiments_storage, global_config, init_logger
 from pipeline.gan import GAN
-from pipeline.generators import CaloganPhysicsGenerator3D
+from pipeline.generators import FlowFractionGenerator
+from pipeline.device import get_local_device
 from pipeline.metrics import *
 from pipeline.config import load_global_config
 from pipeline.custom_metrics import *
 from pipeline.predicates import TrainPredicate, IgnoreFirstNEpochsPredicate, EachNthEpochPredicate
 from pipeline.regularizer import *
 from pipeline.results_storage import ResultsStorage
-from pipeline.storage import ExperimentsStorage
+from pipeline.storage import ExperimentsStorage, ModelParts
 from pipeline.train import Stepper, WganEpochTrainer, GanTrainer
 
 
@@ -102,7 +103,7 @@ def form_gan_trainer(
 
     geometry, _ = data.fhcal_geometry_report_19()
     condition_dim = train_dataset.dataset.condition_dim
-    generator = CaloganPhysicsGenerator3D(
+    generator = FlowFractionGenerator(
         geometry, condition_dim, noise_dim=noise_dimension,
         condition_state=train_dataset.dataset.condition_state,
         dilation_rates=(1, 2, 4),
@@ -119,7 +120,13 @@ def form_gan_trainer(
     # lambd = 1.
     # normalization_loss = lambda: lambd*discriminator.coef**2
 
+    model_dir = experiments_storage.get_model_dir(model_name)
     if gan_model is None:
+        if not os.path.isfile(model_dir.get_part_filepath(ModelParts.TRAINING_CHECKPOINT)):
+            print('Fitting conditional energy flow on the training split')
+            training_data = train_dataset.dataset
+            train_total = training_data.energy.sum(dim=(1, 2))
+            generator.energy_flow.to(get_local_device()).fit(train_total, training_data.conditions)
         gan_model = GAN(generator, discriminator, normal_noise_generator)
     else:
         generator, discriminator = gan_model.generator, gan_model.discriminator
@@ -127,7 +134,7 @@ def form_gan_trainer(
 
     generator_stepper = Stepper(
       optimizer=torch.optim.Adam(
-          generator.parameters(),
+          (parameter for parameter in generator.parameters() if parameter.requires_grad),
           lr=1e-4, betas=(0.0, 0.9)
       )
     )
@@ -148,12 +155,12 @@ def form_gan_trainer(
         lambda_energy=0.0,
         lambda_sparsity=0.0,
         lambda_layer_fraction=0.5,
-        lambda_quantile=0.04,
+        lambda_quantile=0.0,
+        condition_on_total_energy=True,
         lambda_peak=0.1,
         lambda_layer_distribution=0.5
     )
 
-    model_dir = experiments_storage.get_model_dir(model_name)
     trainer = GanTrainer(model_dir=model_dir, use_saved_checkpoint=True, save_checkpoint_once_in_epoch=5)
     train_gan_generator = trainer.train(gan_model=gan_model,
                                         train_dataset=train_dataset, val_dataset=val_dataset,
@@ -175,7 +182,7 @@ def run() -> GAN:
     if architecture not in CaloganPhysicsDiscriminator3D.ARCHITECTURES:
         choices = ', '.join(CaloganPhysicsDiscriminator3D.ARCHITECTURES)
         raise ValueError(f'Invalid FHCAL_ARCHITECTURE {architecture!r}; use {choices}.')
-    model_name = f'physics_virtual25_dilated_gnn_layers7_10_{architecture}_allnodes'
+    model_name = f'physics_flow_fraction_virtual25_{architecture}_allnodes'
     data_filename = os.environ.get('FHCAL_DATA_FILENAME', DEFAULT_DATA_FILENAME)
     if data_filename != DEFAULT_DATA_FILENAME:
         model_name += '_' + os.path.splitext(os.path.basename(data_filename))[0]

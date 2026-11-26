@@ -395,7 +395,8 @@ class WganEpochTrainer(GanEpochTrainer):
 
         debug_every: int = 50,
         physical_modules: bool = False,
-        lambda_gp: float = 0.0
+        lambda_gp: float = 0.0,
+        condition_on_total_energy: bool = False,
     ) -> None:
 
         self.n_critic = n_critic
@@ -411,6 +412,7 @@ class WganEpochTrainer(GanEpochTrainer):
         self.debug_every = debug_every
         self.physical_modules = physical_modules
         self.lambda_gp = lambda_gp
+        self.condition_on_total_energy = condition_on_total_energy
 
         self.gen_batch_cnt = 0
         self.disc_batch_cnt = 0
@@ -454,10 +456,12 @@ class WganEpochTrainer(GanEpochTrainer):
                 len(real_batch_x)
             ).to(get_local_device())
 
-            gen_batch_x = gan_model.generator(
-                noise_batch_z,
-                gen_batch_y
-            ).to(get_local_device())
+            if self.condition_on_total_energy:
+                real_total = real_batch_x.sum(dim=(1, 2))
+                gen_batch_x = gan_model.generator(noise_batch_z, gen_batch_y, total_energy=real_total)
+            else:
+                gen_batch_x = gan_model.generator(noise_batch_z, gen_batch_y)
+            gen_batch_x = gen_batch_x.to(get_local_device())
 
             return (
                 gen_batch_x,
